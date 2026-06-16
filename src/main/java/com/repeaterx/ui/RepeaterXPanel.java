@@ -459,21 +459,5 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     }
 
     @Override
-    public TabData getTab(String id) {
-        RepeaterTab tab = tabs.get(id);
-        return tab != null ? tab.getTabData() : null;
-    }
-
-    @Override public void sendInTab(String id, Runnable callback) {}
-
-    @Override
     public List<TabData> getAllTabs() { return getAllTabData(); }
-
-    @Override
-    public TabData duplicateTab(String id) {
-        RepeaterTab orig = tabs.get(id);
-        if (orig == null) return null;
-        SwingUtilities.invokeLater(this::duplicateCurrentTab);
-        return orig.getTabData();
-    }
 }

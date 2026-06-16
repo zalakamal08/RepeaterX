@@ -33,7 +33,7 @@ public class RepeaterXExtension implements BurpExtension {
         historyManager = new HistoryManager();
         requestSender = new RequestSender(api);
         projectManager = new ProjectManager();
-        apiServer = new ApiServer(historyManager, requestSender, projectManager);
+        apiServer = new ApiServer(historyManager, requestSender);
 
         ApiConfig cfg = loadApiConfig(api);
         try { apiServer.restart(cfg.getHost(), cfg.getPort()); }

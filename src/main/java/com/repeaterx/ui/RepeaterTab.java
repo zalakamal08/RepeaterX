@@ -19,6 +19,7 @@ import javax.swing.border.EmptyBorder;
 import javax.swing.border.MatteBorder;
 import java.awt.*;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -434,15 +435,24 @@ public class RepeaterTab extends JPanel {
         return String.format("%.1f MB", bytes / (1024.0 * 1024));
     }
 
+    // Normalize to CRLF: handles literal \r\n text (some MCP clients send 4-char sequences)
+    // and LF-only line endings that Burp's HTTP parser doesn't accept.
+    private static String crlf(String raw) {
+        if (raw.contains("\\r\\n")) raw = raw.replace("\\r\\n", "\r\n");
+        return raw.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n");
+    }
+
     private void setEditorReq(String raw) {
         if (raw == null || raw.isBlank()) return;
-        try { requestEditor.setRequest(HttpRequest.httpRequest(ByteArray.byteArray(raw.getBytes()))); }
+        try { requestEditor.setRequest(HttpRequest.httpRequest(
+                ByteArray.byteArray(crlf(raw).getBytes(StandardCharsets.UTF_8)))); }
         catch (Exception ignored) {}
     }
 
     private void setEditorResp(String raw) {
         if (raw == null || raw.isBlank()) return;
-        try { responseEditor.setResponse(HttpResponse.httpResponse(ByteArray.byteArray(raw.getBytes()))); }
+        try { responseEditor.setResponse(HttpResponse.httpResponse(
+                ByteArray.byteArray(crlf(raw).getBytes(StandardCharsets.UTF_8)))); }
         catch (Exception ignored) {}
     }
 
@@ -464,6 +474,13 @@ public class RepeaterTab extends JPanel {
     // ── Public API ────────────────────────────────────────────────────────────
 
     public void setRequest(String rawRequest, String host, int port, boolean https) {
+        // When called from MCP (host is empty), extract from the Host: header
+        if (host == null || host.isBlank()) {
+            RequestData parsed = parseRawRequest(crlf(rawRequest));
+            host  = parsed.getHost();
+            port  = parsed.getPort();
+            https = parsed.isHttps();
+        }
         if (tabData.getMetadata() == null) tabData.setMetadata(new HashMap<>());
         tabData.getMetadata().put("host",  host);
         tabData.getMetadata().put("port",  port);

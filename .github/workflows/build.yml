@@ -1,11 +1,11 @@
-name: Build RepeaterX
+name: Build & Release RepeaterX
 
 on:
   push:
-    branches: [ main, master ]
-    tags: [ 'v*' ]
+    branches: [ main ]
+    tags:     [ 'v*' ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -15,63 +15,34 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.5'
 
-      - name: Build shadow JAR
-        run: gradle shadowJar --no-daemon --info
+      - name: Build
+        run: gradle shadowJar --no-daemon
 
-      - name: Verify JAR exists
+      - name: Verify JAR
         run: |
-          ls -la build/libs/
           JAR=$(ls build/libs/RepeaterX-*.jar 2>/dev/null | head -1)
-          if [ -z "$JAR" ]; then
-            echo "ERROR: No JAR file found in build/libs/"
-            exit 1
-          fi
+          [ -z "$JAR" ] && echo "ERROR: JAR not found" && exit 1
           echo "Built: $JAR ($(du -sh $JAR | cut -f1))"
 
-      - name: Upload JAR artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: RepeaterX-${{ github.sha }}
           path: build/libs/RepeaterX-*.jar
           if-no-files-found: error
 
-      - name: Update rolling latest release (main branch)
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: "Latest Build"
-          body: |
-            Automatically updated on every push to `main`.
-
-            **Commit:** ${{ github.sha }}
-            **Message:** ${{ github.event.head_commit.message }}
-
-            ### Installation
-            1. Download `RepeaterX-all.jar`
-            2. In Burp Suite: **Extensions → Add → Select file**
-            3. MCP SSE server starts on `0.0.0.0:7331` — configure via the ⚙ button
-          prerelease: true
-          make_latest: false
-          files: build/libs/RepeaterX-*.jar
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create versioned release (tag push)
+      - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
