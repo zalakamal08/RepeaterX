@@ -128,9 +128,10 @@ public class ApiServer {
         body.put("version",     "1.0.0");
         body.put("host",        currentHost);
         body.put("port",        currentPort);
-        body.put("historySize", historyManager.size());
-        body.put("mcp_sse",     "GET /sse");
-        body.put("mcp_post",    "POST /message?sessionId=<id>");
+        body.put("historySize",    historyManager.size());
+        body.put("mcp_streamable", "POST /mcp  (recommended, no proxy needed)");
+        body.put("mcp_sse",        "GET /sse   (legacy SSE transport)");
+        body.put("mcp_post",       "POST /message?sessionId=<id>  (legacy SSE messages)");
         byte[] bytes = MAPPER.writeValueAsBytes(body);
         ex.getResponseHeaders().set("Content-Type",              "application/json");
         ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");

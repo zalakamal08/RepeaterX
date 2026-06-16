@@ -73,8 +73,9 @@ public class McpSseServer {
     // ── Registration ──────────────────────────────────────────────────────────
 
     public void registerHandlers(SimpleHttpServer server) {
-        server.createContext("/sse",     this::handleSse);
-        server.createContext("/",        this::handleSse);   // proxy may connect to bare host:port
+        server.createContext("/mcp",     this::handleStreamable); // MCP Streamable HTTP (2025-03-26)
+        server.createContext("/sse",     this::handleSse);         // legacy SSE transport
+        server.createContext("/",        this::handleSse);         // proxy compat (bare host:port)
         server.createContext("/message", this::handleMessage);
     }
 
@@ -82,6 +83,7 @@ public class McpSseServer {
         heartbeat.shutdownNow();
         sessions.values().forEach(SseSession::close);
         sessions.clear();
+        streamableSessions.clear();
     }
 
     // ── SSE session ───────────────────────────────────────────────────────────
@@ -204,20 +206,105 @@ public class McpSseServer {
         }
     }
 
+    // ── Streamable HTTP transport (MCP 2025-03-26) ───────────────────────────
+    //
+    // Single endpoint: POST /mcp
+    // Client sends JSON-RPC 2.0 body; server responds with application/json.
+    // No proxy, no long-lived connections, no SSE sessions.
+    // Config in Claude Desktop / Claude Code:
+    //   { "type": "http", "url": "http://HOST:7331/mcp" }
+
+    private final Map<String, Long> streamableSessions = new ConcurrentHashMap<>();
+
+    private void handleStreamable(HttpExchange ex) throws IOException {
+        addCors(ex);
+
+        if ("OPTIONS".equals(ex.getRequestMethod())) {
+            ex.getResponseHeaders().set("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
+            ex.getResponseHeaders().set("Access-Control-Allow-Headers",
+                "Content-Type, Mcp-Session-Id, Accept");
+            ex.sendResponseHeaders(204, -1);
+            return;
+        }
+
+        // DELETE /mcp — client closing session
+        if ("DELETE".equals(ex.getRequestMethod())) {
+            String sid = ex.getRequestHeaders().getOrDefault("mcp-session-id", "");
+            if (!sid.isEmpty()) streamableSessions.remove(sid);
+            ex.sendResponseHeaders(204, -1);
+            return;
+        }
+
+        if (!"POST".equals(ex.getRequestMethod())) {
+            ex.sendResponseHeaders(405, -1);
+            return;
+        }
+
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String sessionId = ex.getRequestHeaders().getOrDefault("mcp-session-id", "");
+
+        try {
+            JsonNode req    = MAPPER.readTree(body);
+            String   method = req.path("method").asText("");
+            JsonNode id     = req.path("id");
+
+            // notifications/initialized and other one-way notifications: 202, no body
+            if (method.startsWith("notifications/")) {
+                ex.sendResponseHeaders(202, -1);
+                return;
+            }
+
+            // initialize — create a new session
+            if ("initialize".equals(method)) {
+                sessionId = UUID.randomUUID().toString();
+                streamableSessions.put(sessionId, System.currentTimeMillis());
+            }
+
+            ObjectNode resp = MAPPER.createObjectNode();
+            resp.put("jsonrpc", "2.0");
+            if (!id.isMissingNode()) resp.set("id", id);
+            resp.set("result", MAPPER.valueToTree(processRequest(method, req.path("params"))));
+
+            byte[] bytes = MAPPER.writeValueAsBytes(resp);
+            ex.getResponseHeaders().set("Content-Type", "application/json");
+            if (!sessionId.isEmpty()) ex.getResponseHeaders().set("Mcp-Session-Id", sessionId);
+            ex.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+
+        } catch (Exception e) {
+            ObjectNode err     = MAPPER.createObjectNode();
+            ObjectNode errBody = err.putObject("error");
+            errBody.put("code",    -32603);
+            errBody.put("message", e.getMessage() != null ? e.getMessage() : "internal error");
+            err.put("jsonrpc", "2.0");
+            err.putNull("id");
+            byte[] bytes = MAPPER.writeValueAsBytes(err);
+            ex.getResponseHeaders().set("Content-Type", "application/json");
+            ex.sendResponseHeaders(500, bytes.length);
+            try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+        }
+    }
+
     // ── JSON-RPC dispatcher ───────────────────────────────────────────────────
+
+    private static final List<String> SUPPORTED_VERSIONS = List.of("2025-03-26", "2024-11-05");
 
     private Object processRequest(String method, JsonNode params) throws Exception {
         return switch (method) {
-            case "initialize" -> handleInitialize();
+            case "initialize" -> handleInitialize(params);
             case "tools/list" -> handleToolsList();
             case "tools/call" -> handleToolsCall(params);
             default -> throw new IllegalArgumentException("Method not found: " + method);
         };
     }
 
-    private ObjectNode handleInitialize() {
+    private ObjectNode handleInitialize(JsonNode params) {
+        // Negotiate protocol version — use client's requested version if we support it,
+        // otherwise fall back to our highest supported version.
+        String requested = params.path("protocolVersion").asText("2024-11-05");
+        String version   = SUPPORTED_VERSIONS.contains(requested) ? requested : SUPPORTED_VERSIONS.get(0);
         ObjectNode r = MAPPER.createObjectNode();
-        r.put("protocolVersion", "2024-11-05");
+        r.put("protocolVersion", version);
         ObjectNode info = r.putObject("serverInfo");
         info.put("name",    SERVER_NAME);
         info.put("version", SERVER_VERSION);
