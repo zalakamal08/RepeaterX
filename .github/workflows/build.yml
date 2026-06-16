@@ -3,6 +3,7 @@ name: Build RepeaterX
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -48,11 +49,34 @@ jobs:
           path: build/libs/RepeaterX-*.jar
           if-no-files-found: error
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v1
+      - name: Update rolling latest release (main branch)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: latest
+          name: "Latest Build"
+          body: |
+            Automatically updated on every push to `main`.
+
+            **Commit:** ${{ github.sha }}
+            **Message:** ${{ github.event.head_commit.message }}
+
+            ### Installation
+            1. Download `RepeaterX-all.jar`
+            2. In Burp Suite: **Extensions → Add → Select file**
+            3. MCP SSE server starts on `0.0.0.0:7331` — configure via the ⚙ button
+          prerelease: true
+          make_latest: false
           files: build/libs/RepeaterX-*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create versioned release (tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
           generate_release_notes: true
+          make_latest: true
+          files: build/libs/RepeaterX-*.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
