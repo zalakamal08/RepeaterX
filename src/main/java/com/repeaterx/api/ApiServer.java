@@ -5,33 +5,33 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.repeaterx.core.HistoryManager;
 import com.repeaterx.core.ProjectManager;
 import com.repeaterx.core.RequestSender;
+import com.repeaterx.http.HttpExchange;
+import com.repeaterx.http.SimpleHttpServer;
 import com.repeaterx.mcp.McpSseServer;
 import com.repeaterx.model.TabData;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
+
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 /**
- * Hosts the MCP SSE server (GET /sse, POST /message) and a lightweight
- * health-check endpoint (GET /status). All agent interaction goes through
- * the MCP tools — no separate REST API needed.
+ * Hosts the MCP SSE server (GET /sse, POST /message) and a health-check
+ * endpoint (GET /status). All agent interaction goes through MCP tools.
+ * Uses SimpleHttpServer (ServerSocket-based) so Burp's class loader can
+ * always find it — no JDK-internal com.sun.* APIs.
  */
 public class ApiServer {
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
         .enable(SerializationFeature.INDENT_OUTPUT);
 
-    private HttpServer server;
-    private String currentHost = "0.0.0.0";
-    private int    currentPort = 7331;
+    private SimpleHttpServer server;
+    private String           currentHost = "0.0.0.0";
+    private int              currentPort = 7331;
 
     private final HistoryManager historyManager;
     private final RequestSender  requestSender;
@@ -45,12 +45,12 @@ public class ApiServer {
     // ── Interfaces ────────────────────────────────────────────────────────────
 
     public interface TabOperations {
-        TabData createTab(String name, String rawRequest);
-        boolean deleteTab(String id);
-        TabData getTab(String id);
-        void    sendInTab(String id, Runnable callback);
+        TabData       createTab(String name, String rawRequest);
+        boolean       deleteTab(String id);
+        TabData       getTab(String id);
+        void          sendInTab(String id, Runnable callback);
         List<TabData> getAllTabs();
-        TabData duplicateTab(String id);
+        TabData       duplicateTab(String id);
     }
 
     public interface StartListener {
@@ -60,7 +60,8 @@ public class ApiServer {
 
     // ── Construction ──────────────────────────────────────────────────────────
 
-    public ApiServer(HistoryManager historyManager, RequestSender requestSender, ProjectManager projectManager) {
+    public ApiServer(HistoryManager historyManager, RequestSender requestSender,
+                     ProjectManager projectManager) {
         this.historyManager = historyManager;
         this.requestSender  = requestSender;
         this.projectManager = projectManager;
@@ -84,16 +85,14 @@ public class ApiServer {
     }
 
     public void setStartListener(StartListener l) { this.startListener = l; }
-
-    public McpSseServer getMcpSseServer() { return mcpSseServer; }
+    public McpSseServer getMcpSseServer()          { return mcpSseServer; }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     public synchronized void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(currentHost, currentPort), 20);
-        server.createContext("/status", this::handleStatus);   // health check
-        mcpSseServer.registerHandlers(server);                 // /sse + /message
-        server.setExecutor(Executors.newCachedThreadPool());
+        server = SimpleHttpServer.create(currentHost, currentPort);
+        server.createContext("/status", this::handleStatus);
+        mcpSseServer.registerHandlers(server);
         server.start();
         if (startListener != null) startListener.onStart(currentHost, currentPort);
     }
@@ -131,14 +130,10 @@ public class ApiServer {
         body.put("historySize", historyManager.size());
         body.put("mcp_sse",     "GET /sse");
         body.put("mcp_post",    "POST /message?sessionId=<id>");
-        sendJson(ex, 200, body);
-    }
-
-    private void sendJson(HttpExchange ex, int status, Object obj) throws IOException {
-        byte[] bytes = MAPPER.writeValueAsBytes(obj);
-        ex.getResponseHeaders().set("Content-Type", "application/json");
+        byte[] bytes = MAPPER.writeValueAsBytes(body);
+        ex.getResponseHeaders().set("Content-Type",              "application/json");
         ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
-        ex.sendResponseHeaders(status, bytes.length);
+        ex.sendResponseHeaders(200, bytes.length);
         try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
     }
 }

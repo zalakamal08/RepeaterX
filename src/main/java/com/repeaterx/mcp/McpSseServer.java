@@ -6,23 +6,18 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.repeaterx.core.HistoryManager;
 import com.repeaterx.core.RequestSender;
+import com.repeaterx.http.HttpExchange;
+import com.repeaterx.http.SimpleHttpServer;
 import com.repeaterx.model.HistoryEntry;
 import com.repeaterx.model.RequestData;
 import com.repeaterx.model.TabData;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.function.Supplier;
 
 /**
@@ -32,10 +27,8 @@ import java.util.function.Supplier;
  *   - GET  /sse      → long-lived SSE stream; sends "endpoint" event on connect
  *   - POST /message  → JSON-RPC 2.0 requests; responses sent back via the SSE stream
  *
- * Claude Desktop (stdio-only) can connect via PortSwigger's proxy JAR:
+ * For Claude Desktop (stdio-only), bridge via PortSwigger's proxy JAR:
  *   java -jar mcp-proxy-all.jar --sse-url http://127.0.0.1:7331
- *
- * Tools follow PortSwigger's snake_case naming convention.
  */
 public class McpSseServer {
 
@@ -45,8 +38,8 @@ public class McpSseServer {
 
     private final HistoryManager historyManager;
     private final RequestSender  requestSender;
-    private Supplier<List<TabData>>  tabsSupplier;
-    private TabOperations            tabOps;
+    private Supplier<List<TabData>> tabsSupplier;
+    private TabOperations           tabOps;
 
     private final Map<String, SseSession> sessions = new ConcurrentHashMap<>();
     private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -64,16 +57,15 @@ public class McpSseServer {
     public McpSseServer(HistoryManager historyManager, RequestSender requestSender) {
         this.historyManager = historyManager;
         this.requestSender  = requestSender;
-        // Send a keep-alive comment every 25 seconds to prevent proxy timeouts
         heartbeat.scheduleAtFixedRate(this::sendHeartbeat, 25, 25, TimeUnit.SECONDS);
     }
 
-    public void setTabOperations(TabOperations ops)          { this.tabOps = ops; }
-    public void setTabsSupplier(Supplier<List<TabData>> s)   { this.tabsSupplier = s; }
+    public void setTabOperations(TabOperations ops)         { this.tabOps = ops; }
+    public void setTabsSupplier(Supplier<List<TabData>> s)  { this.tabsSupplier = s; }
 
     // ── Registration ──────────────────────────────────────────────────────────
 
-    public void registerHandlers(HttpServer server) {
+    public void registerHandlers(SimpleHttpServer server) {
         server.createContext("/sse",     this::handleSse);
         server.createContext("/message", this::handleMessage);
     }
@@ -102,8 +94,8 @@ public class McpSseServer {
             out.flush();
         }
 
-        synchronized void sendComment(String comment) throws IOException {
-            out.write((":" + comment + "\n\n").getBytes(StandardCharsets.UTF_8));
+        synchronized void sendComment(String text) throws IOException {
+            out.write((":" + text + "\n\n").getBytes(StandardCharsets.UTF_8));
             out.flush();
         }
 
@@ -117,21 +109,18 @@ public class McpSseServer {
             ex.sendResponseHeaders(405, -1);
             return;
         }
+        ex.getResponseHeaders().set("Content-Type",       "text/event-stream");
+        ex.getResponseHeaders().set("Cache-Control",      "no-cache");
+        ex.getResponseHeaders().set("X-Accel-Buffering",  "no");
+        addCors(ex);
+        ex.sendResponseHeaders(200, 0); // 0 = streaming
 
-        ex.getResponseHeaders().set("Content-Type",  "text/event-stream");
-        ex.getResponseHeaders().set("Cache-Control", "no-cache");
-        ex.getResponseHeaders().set("Connection",    "keep-alive");
-        ex.getResponseHeaders().set("X-Accel-Buffering", "no");
-        addCorsHeaders(ex);
-        ex.sendResponseHeaders(200, 0);
-
-        String    sessionId = UUID.randomUUID().toString();
-        OutputStream out   = ex.getResponseBody();
-        SseSession session  = new SseSession(sessionId, out);
+        String     sessionId = UUID.randomUUID().toString();
+        OutputStream out     = ex.getResponseBody();
+        SseSession session   = new SseSession(sessionId, out);
         sessions.put(sessionId, session);
 
         try {
-            // Tell the MCP client where to POST messages (PortSwigger pattern)
             session.send("endpoint", "/message?sessionId=" + sessionId);
             session.latch.await();
         } catch (InterruptedException e) {
@@ -161,41 +150,40 @@ public class McpSseServer {
         SseSession          session   = sessionId != null ? sessions.get(sessionId) : null;
 
         if (session == null) {
-            sendHttpJson(ex, 404, "{\"error\":\"Session not found\"}");
+            addCors(ex);
+            ex.sendResponseHeaders(404, -1);
             return;
         }
 
-        String body;
-        try (InputStream is = ex.getRequestBody()) {
-            body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-        }
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
 
-        // Acknowledge immediately (PortSwigger pattern)
-        addCorsHeaders(ex);
+        // Acknowledge immediately — response goes via SSE stream
+        addCors(ex);
         ex.sendResponseHeaders(202, -1);
         ex.close();
 
-        // Dispatch and respond via SSE
+        // Dispatch and reply via SSE
         try {
-            JsonNode request = MAPPER.readTree(body);
-            String   method  = request.path("method").asText("");
-
-            // Notifications have no id and need no response
+            JsonNode req    = MAPPER.readTree(body);
+            String   method = req.path("method").asText("");
             if (method.startsWith("notifications/")) return;
 
-            JsonNode responseNode = buildJsonRpcResponse(
-                request.get("id"),
-                processRequest(method, request.path("params"))
-            );
-            session.send("message", MAPPER.writeValueAsString(responseNode));
+            ObjectNode resp = MAPPER.createObjectNode();
+            resp.put("jsonrpc", "2.0");
+            resp.set("id", req.get("id"));
+            resp.set("result", MAPPER.valueToTree(
+                processRequest(method, req.path("params"))
+            ));
+            session.send("message", MAPPER.writeValueAsString(resp));
+
         } catch (Exception e) {
             try {
                 ObjectNode err = MAPPER.createObjectNode();
                 err.put("jsonrpc", "2.0");
                 err.putNull("id");
                 ObjectNode errBody = err.putObject("error");
-                errBody.put("code", -32603);
-                errBody.put("message", e.getMessage() != null ? e.getMessage() : "Internal error");
+                errBody.put("code",    -32603);
+                errBody.put("message", e.getMessage() != null ? e.getMessage() : "internal error");
                 session.send("message", MAPPER.writeValueAsString(err));
             } catch (Exception ignored) {}
         }
@@ -205,53 +193,40 @@ public class McpSseServer {
 
     private Object processRequest(String method, JsonNode params) throws Exception {
         return switch (method) {
-            case "initialize"  -> handleInitialize(params);
-            case "tools/list"  -> handleToolsList();
-            case "tools/call"  -> handleToolsCall(params);
+            case "initialize" -> handleInitialize();
+            case "tools/list" -> handleToolsList();
+            case "tools/call" -> handleToolsCall(params);
             default -> throw new IllegalArgumentException("Method not found: " + method);
         };
     }
 
-    private ObjectNode buildJsonRpcResponse(JsonNode id, Object result) throws Exception {
-        ObjectNode resp = MAPPER.createObjectNode();
-        resp.put("jsonrpc", "2.0");
-        if (id != null) resp.set("id", id);
-        resp.set("result", MAPPER.valueToTree(result));
-        return resp;
-    }
-
-    // ── MCP method handlers ───────────────────────────────────────────────────
-
-    private ObjectNode handleInitialize(JsonNode params) {
-        ObjectNode result = MAPPER.createObjectNode();
-        result.put("protocolVersion", "2024-11-05");
-        ObjectNode info = result.putObject("serverInfo");
-        info.put("name", SERVER_NAME);
+    private ObjectNode handleInitialize() {
+        ObjectNode r = MAPPER.createObjectNode();
+        r.put("protocolVersion", "2024-11-05");
+        ObjectNode info = r.putObject("serverInfo");
+        info.put("name",    SERVER_NAME);
         info.put("version", SERVER_VERSION);
-        ObjectNode caps = result.putObject("capabilities");
-        caps.putObject("tools");
-        return result;
+        r.putObject("capabilities").putObject("tools");
+        return r;
     }
 
     private ObjectNode handleToolsList() {
-        ObjectNode result = MAPPER.createObjectNode();
-        ArrayNode  tools  = result.putArray("tools");
-        for (ToolDef t : TOOLS) tools.add(t.toJson(MAPPER));
-        return result;
+        ObjectNode r = MAPPER.createObjectNode();
+        ArrayNode  a = r.putArray("tools");
+        for (ToolDef t : TOOLS) a.add(t.toJson(MAPPER));
+        return r;
     }
 
     private ObjectNode handleToolsCall(JsonNode params) throws Exception {
-        String   toolName = params.path("name").asText();
-        JsonNode args     = params.has("arguments") ? params.get("arguments") : MAPPER.createObjectNode();
-
-        String text = dispatchTool(toolName, args);
-
-        ObjectNode result  = MAPPER.createObjectNode();
-        ArrayNode  content = result.putArray("content");
-        ObjectNode item    = content.addObject();
+        String   name = params.path("name").asText();
+        JsonNode args = params.has("arguments") ? params.get("arguments") : MAPPER.createObjectNode();
+        String   text = dispatchTool(name, args);
+        ObjectNode r  = MAPPER.createObjectNode();
+        ArrayNode  c  = r.putArray("content");
+        ObjectNode item = c.addObject();
         item.put("type", "text");
         item.put("text", text);
-        return result;
+        return r;
     }
 
     // ── Tool dispatch ─────────────────────────────────────────────────────────
@@ -274,51 +249,47 @@ public class McpSseServer {
 
     private String toolGetStatus() throws Exception {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("status", "running");
-        m.put("version", SERVER_VERSION);
+        m.put("status",      "running");
+        m.put("version",     SERVER_VERSION);
         m.put("historySize", historyManager.size());
-        m.put("openTabs", tabsSupplier != null ? tabsSupplier.get().size() : 0);
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(m);
+        m.put("openTabs",    tabsSupplier != null ? tabsSupplier.get().size() : 0);
+        return pretty(m);
     }
 
     private String toolListTabs() throws Exception {
         List<Map<String, Object>> out = new ArrayList<>();
-        List<TabData> tabs = tabsSupplier != null ? tabsSupplier.get() : Collections.emptyList();
-        for (TabData t : tabs) {
+        for (TabData t : tabs()) {
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", t.getId());
-            m.put("name", t.getName());
+            m.put("id",           t.getId());
+            m.put("name",         t.getName());
             m.put("historyCount", t.getHistory() != null ? t.getHistory().size() : 0);
-            m.put("notes", t.getNotes());
+            m.put("notes",        t.getNotes());
             if (t.getLatestResponse() != null) m.put("lastStatus", t.getLatestResponse().getStatusCode());
             out.add(m);
         }
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(out);
+        return pretty(out);
     }
 
     private String toolCreateTab(JsonNode a) throws Exception {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
-        String name = a.path("tab_name").asText("New Tab");
-        String raw  = a.path("raw_request").asText("");
-        TabData td  = tabOps.createTab(name, raw);
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(td);
+        TabData td = tabOps.createTab(a.path("tab_name").asText("New Tab"),
+                                      a.path("raw_request").asText(""));
+        return pretty(td);
     }
 
     private String toolDeleteTab(JsonNode a) throws Exception {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
-        String id = a.path("tab_id").asText();
-        boolean ok = tabOps.deleteTab(id);
-        return MAPPER.writerWithDefaultPrettyPrinter()
-            .writeValueAsString(Map.of("success", ok));
+        boolean ok = tabOps.deleteTab(a.path("tab_id").asText());
+        return pretty(Map.of("success", ok));
     }
 
     private String toolSendRequest(JsonNode a) throws Exception {
-        String host    = a.path("target_hostname").asText();
-        int    port    = a.path("target_port").asInt(443);
-        boolean https  = a.path("uses_https").asBoolean(true);
-        String method  = a.path("method").asText("GET");
-        String raw     = a.path("content").asText();
-        String url     = (https ? "https" : "http") + "://" + host + "/";
+        String  host  = a.path("target_hostname").asText();
+        int     port  = a.path("target_port").asInt(443);
+        boolean https = a.path("uses_https").asBoolean(true);
+        String  method = a.path("method").asText("GET");
+        String  raw   = a.path("content").asText();
+        String  url   = (https ? "https" : "http") + "://" + host + "/";
 
         RequestData req = new RequestData(
             UUID.randomUUID().toString(), method, url, host, port, https, null, null, raw);
@@ -326,23 +297,21 @@ public class McpSseServer {
 
         if (result.isSuccess()) {
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("success", true);
-            m.put("statusCode", result.getResponse().getStatusCode());
-            m.put("statusMessage", result.getResponse().getStatusMessage());
+            m.put("success",      true);
+            m.put("statusCode",   result.getResponse().getStatusCode());
+            m.put("statusMessage",result.getResponse().getStatusMessage());
             m.put("responseTime", result.getElapsed());
             m.put("responseSize", result.getResponse().getResponseSize());
-            m.put("body", result.getResponse().getBody());
-            m.put("rawResponse", result.getResponse().getRawResponse());
-            return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(m);
-        } else {
-            return MAPPER.writerWithDefaultPrettyPrinter()
-                .writeValueAsString(Map.of("success", false, "error", result.getError()));
+            m.put("body",         result.getResponse().getBody());
+            m.put("rawResponse",  result.getResponse().getRawResponse());
+            return pretty(m);
         }
+        return pretty(Map.of("success", false, "error", result.getError()));
     }
 
     private String toolGetHistory(JsonNode a) throws Exception {
         List<HistoryEntry> entries;
-        if (a.has("query"))  entries = historyManager.search(a.get("query").asText());
+        if (a.has("query"))       entries = historyManager.search(a.get("query").asText());
         else if (a.has("status_code")) entries = historyManager.filterByStatus(a.get("status_code").asInt());
         else if (a.has("method"))      entries = historyManager.filterByMethod(a.get("method").asText());
         else if (a.has("tab_id"))      entries = historyManager.getTabHistory(a.get("tab_id").asText());
@@ -356,19 +325,14 @@ public class McpSseServer {
         for (int i = offset; i < end; i++) {
             HistoryEntry e = entries.get(i);
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", e.getId());
-            m.put("tabId", e.getTabId());
+            m.put("id",        e.getId());
+            m.put("tabId",     e.getTabId());
             m.put("timestamp", e.getTimestamp());
             if (e.getRequest()  != null) { m.put("method", e.getRequest().getMethod()); m.put("url", e.getRequest().getUrl()); }
             if (e.getResponse() != null) { m.put("status", e.getResponse().getStatusCode()); m.put("responseTime", e.getResponse().getResponseTime()); }
             out.add(m);
         }
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("total", entries.size());
-        result.put("offset", offset);
-        result.put("count", out.size());
-        result.put("entries", out);
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(result);
+        return pretty(Map.of("total", entries.size(), "offset", offset, "count", out.size(), "entries", out));
     }
 
     private String toolSearchHistory(JsonNode a) throws Exception {
@@ -376,80 +340,57 @@ public class McpSseServer {
         int    limit = a.path("count").asInt(20);
         List<HistoryEntry> results = historyManager.search(query);
         List<HistoryEntry> paged   = results.subList(0, Math.min(limit, results.size()));
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("query", query);
-        out.put("total", results.size());
-        out.put("results", paged);
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(out);
+        return pretty(Map.of("query", query, "total", results.size(), "results", paged));
     }
 
     private String toolReplayEntry(JsonNode a) throws Exception {
-        String entryId = a.path("entry_id").asText();
-        Optional<HistoryEntry> opt = historyManager.getEntryById(entryId);
-        if (opt.isEmpty() || opt.get().getRequest() == null)
-            return "{\"error\":\"History entry not found\"}";
-
+        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
+        if (opt.isEmpty() || opt.get().getRequest() == null) return "{\"error\":\"History entry not found\"}";
         RequestSender.SendResult result = requestSender.send(opt.get().getRequest());
-        if (result.isSuccess()) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("success", true);
-            m.put("statusCode", result.getResponse().getStatusCode());
-            m.put("responseTime", result.getElapsed());
-            m.put("body", result.getResponse().getBody());
-            return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(m);
-        } else {
-            return MAPPER.writerWithDefaultPrettyPrinter()
-                .writeValueAsString(Map.of("success", false, "error", result.getError()));
-        }
+        if (result.isSuccess())
+            return pretty(Map.of("success", true, "statusCode", result.getResponse().getStatusCode(),
+                "responseTime", result.getElapsed(), "body", result.getResponse().getBody()));
+        return pretty(Map.of("success", false, "error", result.getError()));
     }
 
     private String toolGetRequest(JsonNode a) throws Exception {
-        String entryId = a.path("entry_id").asText();
-        Optional<HistoryEntry> opt = historyManager.getEntryById(entryId);
-        if (opt.isEmpty() || opt.get().getRequest() == null)
-            return "{\"error\":\"Not found\"}";
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(opt.get().getRequest());
+        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
+        if (opt.isEmpty() || opt.get().getRequest() == null) return "{\"error\":\"Not found\"}";
+        return pretty(opt.get().getRequest());
     }
 
     private String toolGetResponse(JsonNode a) throws Exception {
-        String entryId = a.path("entry_id").asText();
-        Optional<HistoryEntry> opt = historyManager.getEntryById(entryId);
-        if (opt.isEmpty() || opt.get().getResponse() == null)
-            return "{\"error\":\"Not found\"}";
-        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(opt.get().getResponse());
+        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
+        if (opt.isEmpty() || opt.get().getResponse() == null) return "{\"error\":\"Not found\"}";
+        return pretty(opt.get().getResponse());
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
 
     private void sendHeartbeat() {
         sessions.values().removeIf(s -> {
-            try {
-                s.sendComment("ping");
-                return false;
-            } catch (IOException e) {
-                s.close();
-                return true;
-            }
+            try { s.sendComment("ping"); return false; }
+            catch (IOException e) { s.close(); return true; }
         });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private void addCorsHeaders(HttpExchange ex) {
+    private List<TabData> tabs() {
+        return tabsSupplier != null ? tabsSupplier.get() : Collections.emptyList();
+    }
+
+    private void addCors(HttpExchange ex) {
         ex.getResponseHeaders().set("Access-Control-Allow-Origin",  "*");
         ex.getResponseHeaders().set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         ex.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID");
     }
 
-    private void sendHttpJson(HttpExchange ex, int status, String body) throws IOException {
-        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", "application/json");
-        addCorsHeaders(ex);
-        ex.sendResponseHeaders(status, bytes.length);
-        try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+    private String pretty(Object obj) throws Exception {
+        return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(obj);
     }
 
-    private Map<String, String> parseQuery(String query) {
+    private static Map<String, String> parseQuery(String query) {
         Map<String, String> params = new HashMap<>();
         if (query == null) return params;
         for (String pair : query.split("&")) {
@@ -464,7 +405,7 @@ public class McpSseServer {
         return params;
     }
 
-    // ── Tool definitions (schema) ─────────────────────────────────────────────
+    // ── Tool definitions (MCP schema) ─────────────────────────────────────────
 
     private static final List<ToolDef> TOOLS = List.of(
         ToolDef.of("get_status",
@@ -479,7 +420,7 @@ public class McpSseServer {
             "Create a new RepeaterX tab. Optionally pre-load it with a raw HTTP request.",
             Map.of(
                 "tab_name",    prop("string",  "Tab label, e.g. 'IDOR Test'. Defaults to 'New Tab'.", false),
-                "raw_request", prop("string",  "Full raw HTTP request to pre-load, using \\r\\n line endings.", false)
+                "raw_request", prop("string",  "Full raw HTTP request to pre-load (\\r\\n line endings).", false)
             )),
 
         ToolDef.of("delete_repeater_tab",
@@ -487,13 +428,13 @@ public class McpSseServer {
             Map.of("tab_id", prop("string", "UUID of the tab to close.", true))),
 
         ToolDef.of("send_http_request",
-            "Send an HTTP/1.1 request through Burp's engine. Respects Burp proxy config, TLS settings, and upstream proxies. Returns status, body, and timing.",
+            "Send an HTTP/1.1 request through Burp's engine. Respects Burp proxy, TLS settings, and upstream proxies.",
             Map.of(
-                "content",          prop("string",  "Full raw HTTP request (request line + headers + blank line + body, \\r\\n separated).", true),
-                "target_hostname",  prop("string",  "Target hostname, e.g. 'api.example.com'.", true),
-                "target_port",      prop("integer", "Target port. Defaults to 443.", false),
-                "uses_https",       prop("boolean", "Whether to use TLS. Defaults to true.", false),
-                "method",           prop("string",  "HTTP method. Defaults to 'GET'.", false)
+                "content",         prop("string",  "Full raw HTTP request (request-line + headers + blank + body, \\r\\n separated).", true),
+                "target_hostname", prop("string",  "Target hostname, e.g. 'api.example.com'.", true),
+                "target_port",     prop("integer", "Target port. Default 443.", false),
+                "uses_https",      prop("boolean", "Use TLS. Default true.", false),
+                "method",          prop("string",  "HTTP method. Default 'GET'.", false)
             )),
 
         ToolDef.of("get_request_history",
@@ -537,21 +478,21 @@ public class McpSseServer {
 
     private record ToolDef(String name, String description, Map<String, Map<String, Object>> properties) {
 
-        static ToolDef of(String name, String description, Map<String, Map<String, Object>> props) {
-            return new ToolDef(name, description, props);
+        static ToolDef of(String name, String desc, Map<String, Map<String, Object>> props) {
+            return new ToolDef(name, desc, props);
         }
 
         ObjectNode toJson(ObjectMapper mapper) {
-            ObjectNode node = mapper.createObjectNode();
-            node.put("name", name);
+            ObjectNode node   = mapper.createObjectNode();
+            node.put("name",        name);
             node.put("description", description);
-            ObjectNode schema   = node.putObject("inputSchema");
+            ObjectNode schema = node.putObject("inputSchema");
             schema.put("type", "object");
-            ObjectNode propsNode  = schema.putObject("properties");
-            ArrayNode  reqArray   = schema.putArray("required");
+            ObjectNode propsNode = schema.putObject("properties");
+            ArrayNode  reqArray  = schema.putArray("required");
             for (Map.Entry<String, Map<String, Object>> e : properties.entrySet()) {
                 ObjectNode p = propsNode.putObject(e.getKey());
-                p.put("type", (String) e.getValue().get("type"));
+                p.put("type",        (String) e.getValue().get("type"));
                 p.put("description", (String) e.getValue().get("description"));
                 if (Boolean.TRUE.equals(e.getValue().get("required"))) reqArray.add(e.getKey());
             }
