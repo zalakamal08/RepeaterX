@@ -459,22 +459,19 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
 
     private void showDiffDialog() {
         RepeaterTab current = getCurrentTab();
-        String left  = "";
-        String right = "";
+        List<com.repeaterx.model.HistoryEntry> entries = new java.util.ArrayList<>();
         if (current != null && current.getTabData() != null) {
-            TabData td = current.getTabData();
-            if (td.getLatestResponse() != null) right = td.getLatestResponse().getRawResponse();
-            List<?> hist = td.getHistory();
-            if (hist != null && hist.size() >= 2) {
-                com.repeaterx.model.HistoryEntry entry =
-                    (com.repeaterx.model.HistoryEntry) hist.get(1);
-                if (entry.getResponse() != null) left = entry.getResponse().getRawResponse();
-            }
+            List<com.repeaterx.model.HistoryEntry> hist = current.getTabData().getHistory();
+            if (hist != null) entries.addAll(hist);
+        }
+        if (entries.isEmpty()) {
+            // Fall back to global history if the current tab has none
+            entries.addAll(historyManager.getAllHistory());
         }
         JDialog dlg = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Response Diff", false);
         dlg.setSize(1100, 680);
         dlg.setLocationRelativeTo(this);
-        dlg.add(new DiffPanel(left, right));
+        dlg.add(new DiffPanel(entries));
         dlg.setVisible(true);
     }
 
