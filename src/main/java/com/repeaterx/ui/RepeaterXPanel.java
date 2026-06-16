@@ -10,7 +10,9 @@ import com.repeaterx.core.RequestSender;
 import com.repeaterx.model.ProjectData;
 import com.repeaterx.model.TabData;
 import javax.swing.*;
+import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
+import javax.swing.border.MatteBorder;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
@@ -28,13 +30,13 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     private final HistoryManager historyManager;
     private final RequestSender requestSender;
     private final ProjectManager projectManager;
+    private final ApiServer apiServer;
 
     private JTabbedPane tabbedPane;
     private final Map<String, RepeaterTab> tabs = new LinkedHashMap<>();
     private int tabCounter = 1;
 
-    // Burp-style tab "+" button index sentinel
-    private static final String PLUS_ID = "__plus__";
+    private JLabel apiStatusLabel;
 
     public RepeaterXPanel(MontoyaApi api, HistoryManager historyManager, RequestSender requestSender,
                           ProjectManager projectManager, ApiServer apiServer) {
@@ -42,6 +44,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         this.historyManager = historyManager;
         this.requestSender = requestSender;
         this.projectManager = projectManager;
+        this.apiServer = apiServer;
         apiServer.setTabOperations(this);
         apiServer.setTabsSupplier(() -> new ArrayList<>(getAllTabData()));
         initUI();
@@ -60,12 +63,10 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     }
 
     private void registerKeyBindings() {
-        // Ctrl+K → send current tab
         KeyStroke ctrlK = KeyStroke.getKeyStroke(KeyEvent.VK_K, InputEvent.CTRL_DOWN_MASK);
         getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(ctrlK, "sendCurrentTab");
         getActionMap().put("sendCurrentTab", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
+            @Override public void actionPerformed(ActionEvent e) {
                 RepeaterTab current = getCurrentTab();
                 if (current != null) current.triggerSend();
             }
@@ -73,46 +74,197 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     }
 
     private JPanel buildToolbar() {
-        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 3));
-        bar.setBorder(new EmptyBorder(2, 5, 2, 5));
+        JPanel bar = new JPanel(new BorderLayout(0, 0));
+        bar.setBorder(new MatteBorder(0, 0, 1, 0, separatorColor()));
 
-        JButton newTabBtn = new JButton("+ New Tab");
+        // Left section: tab management
+        JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 3));
+        left.setBorder(new EmptyBorder(0, 6, 0, 0));
+
+        JButton newTabBtn  = toolbarButton("+ New Tab",  "Open a new repeater tab  [Ctrl+T]");
+        JButton dupTabBtn  = toolbarButton("Duplicate",  "Duplicate current tab");
+        JButton renameBtn  = toolbarButton("Rename",     "Rename current tab");
+
         newTabBtn.addActionListener(e -> createNewTab("Tab " + tabCounter, null));
-
-        JButton dupTabBtn = new JButton("Duplicate");
         dupTabBtn.addActionListener(e -> duplicateCurrentTab());
-
-        JButton renameBtn = new JButton("Rename");
         renameBtn.addActionListener(e -> renameCurrentTab());
 
-        JButton saveBtn = new JButton("Save Project");
+        left.add(newTabBtn);
+        left.add(dupTabBtn);
+        left.add(renameBtn);
+        left.add(vSep());
+
+        JButton saveBtn   = toolbarButton("Save",    "Save project to file");
+        JButton loadBtn   = toolbarButton("Load",    "Load project from file");
+        JButton exportBtn = toolbarButton("Export",  "Export tab or history");
+        JButton searchBtn = toolbarButton("Search",  "Search across all history  [Ctrl+F]");
+        JButton diffBtn   = toolbarButton("Diff",    "Compare two responses side-by-side");
+
         saveBtn.addActionListener(e -> saveProject());
-
-        JButton loadBtn = new JButton("Load Project");
         loadBtn.addActionListener(e -> loadProject());
-
-        JButton exportBtn = new JButton("Export");
         exportBtn.addActionListener(e -> showExportMenu(exportBtn));
-
-        JButton searchBtn = new JButton("Search");
         searchBtn.addActionListener(e -> showSearchDialog());
+        diffBtn.addActionListener(e -> showDiffDialog());
 
-        JLabel apiLabel = new JLabel("  API: 127.0.0.1:7331");
-        apiLabel.setForeground(new Color(0, 150, 0));
-        apiLabel.setFont(apiLabel.getFont().deriveFont(Font.BOLD, 11f));
-        apiLabel.setToolTipText("REST API for AI agents — see README for endpoints");
+        left.add(saveBtn);
+        left.add(loadBtn);
+        left.add(exportBtn);
+        left.add(searchBtn);
+        left.add(diffBtn);
 
-        bar.add(newTabBtn);
-        bar.add(dupTabBtn);
-        bar.add(renameBtn);
-        bar.add(new JSeparator(JSeparator.VERTICAL));
-        bar.add(saveBtn);
-        bar.add(loadBtn);
-        bar.add(exportBtn);
-        bar.add(searchBtn);
-        bar.add(Box.createHorizontalStrut(10));
-        bar.add(apiLabel);
+        // Right section: API status + settings
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 3));
+        right.setBorder(new EmptyBorder(0, 0, 0, 8));
+
+        apiStatusLabel = new JLabel();
+        apiStatusLabel.setFont(apiStatusLabel.getFont().deriveFont(Font.BOLD, 11f));
+        apiStatusLabel.setBorder(new CompoundBorder(
+            new MatteBorder(1, 1, 1, 1, new Color(0, 160, 80)),
+            new EmptyBorder(1, 6, 1, 6)
+        ));
+        refreshApiLabel();
+
+        JButton apiSettingsBtn = new JButton("⚙");
+        apiSettingsBtn.setFont(apiSettingsBtn.getFont().deriveFont(Font.PLAIN, 13f));
+        apiSettingsBtn.setFocusPainted(false);
+        apiSettingsBtn.setContentAreaFilled(false);
+        apiSettingsBtn.setBorderPainted(false);
+        apiSettingsBtn.setPreferredSize(new Dimension(28, 22));
+        apiSettingsBtn.setToolTipText("Configure API server host/port");
+        apiSettingsBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        apiSettingsBtn.addActionListener(e -> showApiSettingsDialog());
+
+        right.add(apiStatusLabel);
+        right.add(apiSettingsBtn);
+
+        bar.add(left, BorderLayout.WEST);
+        bar.add(right, BorderLayout.EAST);
         return bar;
+    }
+
+    private JButton toolbarButton(String text, String tip) {
+        JButton btn = new JButton(text);
+        btn.setFocusPainted(false);
+        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, 11f));
+        btn.setPreferredSize(new Dimension(btn.getPreferredSize().width, 26));
+        btn.setToolTipText(tip);
+        return btn;
+    }
+
+    private void refreshApiLabel() {
+        if (apiStatusLabel == null) return;
+        boolean running = apiServer.isRunning();
+        String addr = apiServer.getCurrentHost() + ":" + apiServer.getCurrentPort();
+        if (running) {
+            apiStatusLabel.setText("  API  " + addr + "  ");
+            apiStatusLabel.setForeground(new Color(0, 140, 60));
+            apiStatusLabel.setBorder(new CompoundBorder(
+                new MatteBorder(1, 1, 1, 1, new Color(0, 160, 80)),
+                new EmptyBorder(1, 6, 1, 6)
+            ));
+        } else {
+            apiStatusLabel.setText("  API  stopped  ");
+            apiStatusLabel.setForeground(new Color(180, 0, 0));
+            apiStatusLabel.setBorder(new CompoundBorder(
+                new MatteBorder(1, 1, 1, 1, new Color(200, 0, 0)),
+                new EmptyBorder(1, 6, 1, 6)
+            ));
+        }
+    }
+
+    private void showApiSettingsDialog() {
+        JDialog dlg = new JDialog(
+            (Frame) SwingUtilities.getWindowAncestor(this),
+            "API Server Settings", true);
+        dlg.setSize(400, 220);
+        dlg.setLocationRelativeTo(this);
+        dlg.setResizable(false);
+
+        JPanel content = new JPanel(new BorderLayout(0, 10));
+        content.setBorder(new EmptyBorder(16, 20, 12, 20));
+
+        // Form
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(4, 4, 4, 4);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        JTextField hostField = new JTextField(apiServer.getCurrentHost(), 16);
+        JTextField portField = new JTextField(String.valueOf(apiServer.getCurrentPort()), 8);
+        JLabel noteLabel = new JLabel(
+            "<html><font color='gray' size='3'>Use <b>0.0.0.0</b> to bind all interfaces or <b>127.0.0.1</b> for local only.</font></html>");
+
+        gbc.gridx = 0; gbc.gridy = 0; gbc.weightx = 0;
+        form.add(new JLabel("Host:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1;
+        form.add(hostField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0;
+        form.add(new JLabel("Port:"), gbc);
+        gbc.gridx = 1; gbc.weightx = 1;
+        form.add(portField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 2;
+        form.add(noteLabel, gbc);
+
+        // Buttons
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        JButton applyBtn  = new JButton("Apply & Restart");
+        JButton cancelBtn = new JButton("Cancel");
+        applyBtn.setBackground(new Color(230, 90, 30));
+        applyBtn.setForeground(Color.WHITE);
+        applyBtn.setOpaque(true);
+        applyBtn.setBorderPainted(false);
+        applyBtn.setFocusPainted(false);
+        buttons.add(cancelBtn);
+        buttons.add(applyBtn);
+
+        cancelBtn.addActionListener(e -> dlg.dispose());
+        applyBtn.addActionListener(e -> {
+            String host = hostField.getText().trim();
+            String portStr = portField.getText().trim();
+            if (host.isEmpty()) { JOptionPane.showMessageDialog(dlg, "Host cannot be empty.", "Validation", JOptionPane.WARNING_MESSAGE); return; }
+            int port;
+            try {
+                port = Integer.parseInt(portStr);
+                if (port < 1 || port > 65535) throw new NumberFormatException();
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(dlg, "Port must be 1–65535.", "Validation", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            dlg.dispose();
+            try {
+                apiServer.restart(host, port);
+                refreshApiLabel();
+                JOptionPane.showMessageDialog(this,
+                    "API server restarted on " + host + ":" + port,
+                    "API Settings", JOptionPane.INFORMATION_MESSAGE);
+            } catch (Exception ex) {
+                refreshApiLabel();
+                JOptionPane.showMessageDialog(this,
+                    "Failed to restart API server:\n" + ex.getMessage(),
+                    "Error", JOptionPane.ERROR_MESSAGE);
+            }
+        });
+
+        content.add(form, BorderLayout.CENTER);
+        content.add(buttons, BorderLayout.SOUTH);
+        dlg.add(content);
+        dlg.getRootPane().setDefaultButton(applyBtn);
+        dlg.setVisible(true);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private JSeparator vSep() {
+        JSeparator s = new JSeparator(JSeparator.VERTICAL);
+        s.setPreferredSize(new Dimension(1, 22));
+        return s;
+    }
+
+    private Color separatorColor() {
+        Color c = UIManager.getColor("Separator.foreground");
+        return c != null ? c : new Color(200, 200, 200);
     }
 
     // ── Tab lifecycle ─────────────────────────────────────────────────────────
@@ -121,27 +273,27 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         String id = UUID.randomUUID().toString();
         TabData tabData = new TabData(id, name);
         RepeaterTab tab = new RepeaterTab(api, tabData, historyManager, requestSender);
-
-        // Wire title listener so tab updates its own header after first send
-        tab.setTitleListener((tabId, newTitle) -> SwingUtilities.invokeLater(() -> {
-            int idx = tabbedPane.indexOfComponent(tabs.get(tabId));
-            if (idx >= 0) {
-                tabbedPane.setTabComponentAt(idx, buildTabHeader(newTitle, tabId));
-                tabbedPane.setTitleAt(idx, newTitle);
-            }
-        }));
-
+        wireTitleListener(tab);
         tabs.put(id, tab);
         tabbedPane.addTab(name, tab);
         int idx = tabbedPane.getTabCount() - 1;
         tabbedPane.setTabComponentAt(idx, buildTabHeader(name, id));
         tabbedPane.setSelectedIndex(idx);
         tabCounter++;
-
-        if (rawRequest != null && !rawRequest.isBlank()) {
-            tab.setRequest(rawRequest, "", 443, true);
-        }
+        if (rawRequest != null && !rawRequest.isBlank()) tab.setRequest(rawRequest, "", 443, true);
         return tab;
+    }
+
+    private void wireTitleListener(RepeaterTab tab) {
+        tab.setTitleListener((tabId, newTitle) -> SwingUtilities.invokeLater(() -> {
+            RepeaterTab t = tabs.get(tabId);
+            if (t == null) return;
+            int idx = tabbedPane.indexOfComponent(t);
+            if (idx >= 0) {
+                tabbedPane.setTabComponentAt(idx, buildTabHeader(newTitle, tabId));
+                tabbedPane.setTitleAt(idx, newTitle);
+            }
+        }));
     }
 
     private JPanel buildTabHeader(String name, String tabId) {
@@ -156,14 +308,13 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         close.setBorder(new EmptyBorder(0, 4, 0, 2));
         close.setContentAreaFilled(false);
         close.setFocusPainted(false);
-        close.setForeground(Color.GRAY);
+        close.setForeground(new Color(140, 140, 140));
         close.setToolTipText("Close tab");
         close.addMouseListener(new java.awt.event.MouseAdapter() {
-            @Override public void mouseEntered(java.awt.event.MouseEvent e) { close.setForeground(Color.RED); }
-            @Override public void mouseExited(java.awt.event.MouseEvent e) { close.setForeground(Color.GRAY); }
+            @Override public void mouseEntered(java.awt.event.MouseEvent e) { close.setForeground(new Color(200, 0, 0)); }
+            @Override public void mouseExited(java.awt.event.MouseEvent e)  { close.setForeground(new Color(140, 140, 140)); }
         });
         close.addActionListener(e -> closeTab(tabId));
-
         header.add(label);
         header.add(close);
         return header;
@@ -183,24 +334,17 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         if (current == null) return;
         TabData orig = current.getTabData();
         String newId = UUID.randomUUID().toString();
-        String newName = orig.getName() + " (copy)";
-        TabData copy = new TabData(newId, newName);
+        TabData copy = new TabData(newId, orig.getName() + " (copy)");
         copy.setCurrentRequest(orig.getCurrentRequest());
         copy.setNotes(orig.getNotes() != null ? orig.getNotes() : "");
         if (orig.getMetadata() != null) copy.setMetadata(new java.util.HashMap<>(orig.getMetadata()));
 
         RepeaterTab newTab = new RepeaterTab(api, copy, historyManager, requestSender);
-        newTab.setTitleListener((tabId, newTitle) -> SwingUtilities.invokeLater(() -> {
-            int idx = tabbedPane.indexOfComponent(tabs.get(tabId));
-            if (idx >= 0) {
-                tabbedPane.setTabComponentAt(idx, buildTabHeader(newTitle, tabId));
-                tabbedPane.setTitleAt(idx, newTitle);
-            }
-        }));
+        wireTitleListener(newTab);
         tabs.put(newId, newTab);
-        tabbedPane.addTab(newName, newTab);
+        tabbedPane.addTab(copy.getName(), newTab);
         int idx = tabbedPane.getTabCount() - 1;
-        tabbedPane.setTabComponentAt(idx, buildTabHeader(newName, newId));
+        tabbedPane.setTabComponentAt(idx, buildTabHeader(copy.getName(), newId));
         tabbedPane.setSelectedIndex(idx);
         tabCounter++;
     }
@@ -232,7 +376,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         if (fc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             try {
                 projectManager.saveProject(buildProjectData(), fc.getSelectedFile().toPath());
-                JOptionPane.showMessageDialog(this, "Project saved.");
+                JOptionPane.showMessageDialog(this, "Project saved successfully.");
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this, "Save failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
             }
@@ -244,7 +388,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             try {
                 loadProjectData(projectManager.loadProject(fc.getSelectedFile().toPath()));
-                JOptionPane.showMessageDialog(this, "Project loaded.");
+                JOptionPane.showMessageDialog(this, "Project loaded successfully.");
             } catch (Exception e) {
                 JOptionPane.showMessageDialog(this, "Load failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
             }
@@ -253,9 +397,9 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
 
     private void showExportMenu(JButton source) {
         JPopupMenu menu = new JPopupMenu();
-        JMenuItem json = new JMenuItem("Export Tab as JSON");
-        JMenuItem txt = new JMenuItem("Export Tab as TXT");
-        JMenuItem hist = new JMenuItem("Export History as JSON");
+        JMenuItem json  = new JMenuItem("Export Tab as JSON");
+        JMenuItem txt   = new JMenuItem("Export Tab as TXT");
+        JMenuItem hist  = new JMenuItem("Export History as JSON");
         json.addActionListener(e -> exportTab("json"));
         txt.addActionListener(e -> exportTab("txt"));
         hist.addActionListener(e -> exportHistory());
@@ -265,7 +409,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
 
     private void exportTab(String fmt) {
         RepeaterTab current = getCurrentTab();
-        if (current == null) { JOptionPane.showMessageDialog(this, "No tab selected."); return; }
+        if (current == null) { JOptionPane.showMessageDialog(this, "No active tab."); return; }
         JFileChooser fc = new JFileChooser();
         fc.setSelectedFile(new File("repeaterx-tab." + fmt));
         if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
@@ -285,7 +429,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
                 content = sb.toString();
             }
             Files.writeString(fc.getSelectedFile().toPath(), content);
-            JOptionPane.showMessageDialog(this, "Exported.");
+            JOptionPane.showMessageDialog(this, "Exported successfully.");
         } catch (Exception e) {
             JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
@@ -307,9 +451,30 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
 
     private void showSearchDialog() {
         JDialog dlg = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Global Search", false);
-        dlg.setSize(860, 520);
+        dlg.setSize(900, 540);
         dlg.setLocationRelativeTo(this);
         dlg.add(new SearchPanel(historyManager));
+        dlg.setVisible(true);
+    }
+
+    private void showDiffDialog() {
+        RepeaterTab current = getCurrentTab();
+        String left  = "";
+        String right = "";
+        if (current != null && current.getTabData() != null) {
+            TabData td = current.getTabData();
+            if (td.getLatestResponse() != null) right = td.getLatestResponse().getRawResponse();
+            List<?> hist = td.getHistory();
+            if (hist != null && hist.size() >= 2) {
+                com.repeaterx.model.HistoryEntry entry =
+                    (com.repeaterx.model.HistoryEntry) hist.get(1);
+                if (entry.getResponse() != null) left = entry.getResponse().getRawResponse();
+            }
+        }
+        JDialog dlg = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Response Diff", false);
+        dlg.setSize(1100, 680);
+        dlg.setLocationRelativeTo(this);
+        dlg.add(new DiffPanel(left, right));
         dlg.setVisible(true);
     }
 
@@ -333,15 +498,8 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         tabCounter = 1;
         if (data.getTabs() != null && !data.getTabs().isEmpty()) {
             for (TabData td : data.getTabs()) {
-                final String tid = td.getId();
                 RepeaterTab tab = new RepeaterTab(api, td, historyManager, requestSender);
-                tab.setTitleListener((tabId, newTitle) -> SwingUtilities.invokeLater(() -> {
-                    int idx = tabbedPane.indexOfComponent(tabs.get(tabId));
-                    if (idx >= 0) {
-                        tabbedPane.setTabComponentAt(idx, buildTabHeader(newTitle, tabId));
-                        tabbedPane.setTitleAt(idx, newTitle);
-                    }
-                }));
+                wireTitleListener(tab);
                 tabs.put(td.getId(), tab);
                 tabbedPane.addTab(td.getName(), tab);
                 int idx = tabbedPane.getTabCount() - 1;
@@ -357,12 +515,13 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         if (projectManager.hasExistingProject()) {
             try {
                 ProjectData data = projectManager.loadProject();
-                if (data != null && data.getTabs() != null && !data.getTabs().isEmpty()) {
+                if (data != null && data.getTabs() != null && !data.getTabs().isEmpty())
                     loadProjectData(data);
-                }
             } catch (Exception ignored) {}
         }
     }
+
+    // ── Public API ────────────────────────────────────────────────────────────
 
     public void sendToRepeaterX(String rawRequest, String host, int port, boolean https) {
         RepeaterTab tab = createNewTab("Tab " + tabCounter, null);
@@ -401,15 +560,10 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         return tab != null ? tab.getTabData() : null;
     }
 
-    @Override
-    public void sendInTab(String id, Runnable callback) {
-        // reserved for future programmatic send
-    }
+    @Override public void sendInTab(String id, Runnable callback) {}
 
     @Override
-    public List<TabData> getAllTabs() {
-        return getAllTabData();
-    }
+    public List<TabData> getAllTabs() { return getAllTabData(); }
 
     @Override
     public TabData duplicateTab(String id) {

@@ -27,16 +27,18 @@ import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 
 public class ApiServer {
-    private static final int PORT = 7331;
     private static final ObjectMapper mapper = new ObjectMapper()
         .enable(SerializationFeature.INDENT_OUTPUT);
 
     private HttpServer server;
+    private String currentHost = "0.0.0.0";
+    private int currentPort = 7331;
     private final HistoryManager historyManager;
     private final RequestSender requestSender;
     private final ProjectManager projectManager;
     private Supplier<List<TabData>> tabsSupplier;
     private TabOperations tabOps;
+    private StartListener startListener;
 
     public interface TabOperations {
         TabData createTab(String name, String rawRequest);
@@ -47,6 +49,11 @@ public class ApiServer {
         TabData duplicateTab(String id);
     }
 
+    public interface StartListener {
+        void onStart(String host, int port);
+        void onStop();
+    }
+
     public ApiServer(HistoryManager historyManager, RequestSender requestSender, ProjectManager projectManager) {
         this.historyManager = historyManager;
         this.requestSender = requestSender;
@@ -55,9 +62,10 @@ public class ApiServer {
 
     public void setTabOperations(TabOperations ops) { this.tabOps = ops; }
     public void setTabsSupplier(Supplier<List<TabData>> supplier) { this.tabsSupplier = supplier; }
+    public void setStartListener(StartListener l) { this.startListener = l; }
 
-    public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", PORT), 10);
+    public synchronized void start() throws IOException {
+        server = HttpServer.create(new InetSocketAddress(currentHost, currentPort), 20);
         server.createContext("/tabs", this::handleTabs);
         server.createContext("/history", this::handleHistory);
         server.createContext("/request/", this::handleRequest);
@@ -70,11 +78,29 @@ public class ApiServer {
         server.createContext("/status", this::handleStatus);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
+        if (startListener != null) startListener.onStart(currentHost, currentPort);
     }
 
-    public void stop() {
-        if (server != null) server.stop(0);
+    public synchronized void stop() {
+        if (server != null) {
+            server.stop(1);
+            server = null;
+            if (startListener != null) startListener.onStop();
+        }
     }
+
+    public synchronized void restart(String host, int port) throws IOException {
+        stop();
+        this.currentHost = host;
+        this.currentPort = port;
+        start();
+    }
+
+    public String getCurrentHost() { return currentHost; }
+    public int getCurrentPort() { return currentPort; }
+    public boolean isRunning() { return server != null; }
+
+    public int getPort() { return currentPort; }
 
     private void handleTabs(HttpExchange ex) throws IOException {
         String method = ex.getRequestMethod();
@@ -291,12 +317,13 @@ public class ApiServer {
 
     private void handleStatus(HttpExchange ex) throws IOException {
         try {
-            sendJson(ex, 200, Map.of(
-                "status", "running",
-                "version", "1.0.0",
-                "port", PORT,
-                "historySize", historyManager.size()
-            ));
+            Map<String, Object> statusMap = new LinkedHashMap<>();
+            statusMap.put("status", "running");
+            statusMap.put("version", "1.0.0");
+            statusMap.put("host", currentHost);
+            statusMap.put("port", currentPort);
+            statusMap.put("historySize", historyManager.size());
+            sendJson(ex, 200, statusMap);
         } catch (Exception e) {
             sendJson(ex, 500, Map.of("error", e.getMessage() != null ? e.getMessage() : "Internal error"));
         }
@@ -337,5 +364,4 @@ public class ApiServer {
         return params;
     }
 
-    public int getPort() { return PORT; }
 }

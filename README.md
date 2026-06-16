@@ -1,134 +1,143 @@
-# RepeaterX
+# RepeaterX — Burp Suite Extension
 
-An AI-native Burp Suite extension that enhances Burp Repeater with AI agent integration, project persistence, and a local REST API.
+A professional Burp Suite extension that replicates the Burp Repeater workflow and adds a local REST API for AI-assisted testing, automation, and scripting.
 
 [![Build RepeaterX](https://github.com/zalakamal08/RepeaterX/actions/workflows/build.yml/badge.svg)](https://github.com/zalakamal08/RepeaterX/actions/workflows/build.yml)
 
+---
+
 ## Features
 
-- **Repeater-like UI** — Familiar Burp Repeater interface with native Burp HTTP request/response editors
-- **Tab Management** — Multiple tabs with history, notes, duplicate, rename, and close
-- **Request History** — Full history per tab and globally, with search and filter
-- **Project Persistence** — Save/load all tabs, requests, responses, and notes to JSON; auto-saves every 30s
-- **AI REST API** — Local HTTP API on `127.0.0.1:7331` for AI agents and automation frameworks
-- **Context Menu** — "Send to RepeaterX" from Proxy, Target, Logger, and all Burp tools
-- **Diff Viewer** — Compare requests and responses side by side with color highlighting
-- **Global Search** — Search across all requests, responses, notes, and history
-- **Export** — Export tabs and full history as JSON or TXT
+- **Repeater-style UI** — per-tab request/response editors with native Burp HTTP editors
+- **History navigation** — ◄ ► arrows to browse per-tab history without leaving the view
+- **Per-tab notes** — collapsible notes panel, persisted with the project
+- **Color-coded status chips** — green 2xx · blue 3xx · orange 4xx · red 5xx
+- **Ctrl+K shortcut** — send request from any focused field
+- **Auto-save on close** — project is written to `~/.repeaterx/project.json` when Burp exits
+- **30-second auto-save** — never lose work during a session
+- **Context menu** — right-click any Burp request → "Send to RepeaterX"
+- **Tab management** — new, duplicate, rename, close
+- **Export** — save tabs or full history as JSON or plain text
+- **Global search** — search across all history entries
+- **Response diff** — side-by-side comparison with color highlighting
+- **REST API** — local HTTP server (default `0.0.0.0:7331`) for AI agents and scripts
+- **Configurable API server** — change host/port at runtime via the ⚙ button; config persists across restarts
+- **MCP server** — built-in Model Context Protocol server so Claude and other AI agents can control Burp directly
+
+---
+
+## Requirements
+
+| Requirement | Version |
+|---|---|
+| Burp Suite Pro / Community | 2024.x+ |
+| Java | 17+ |
+
+---
 
 ## Installation
 
-1. Download `RepeaterX-1.0.0.jar` from [Releases](https://github.com/zalakamal08/RepeaterX/releases)
-2. Open Burp Suite → **Extensions** → **Installed** → **Add**
-3. Select the JAR file and click **Next**
-4. The **RepeaterX** tab will appear in the Burp Suite toolbar
+1. Download the latest `RepeaterX-all.jar` from [GitHub Releases](https://github.com/zalakamal08/RepeaterX/releases) or from the [CI Actions page](https://github.com/zalakamal08/RepeaterX/actions).
+2. In Burp Suite: **Extensions → Installed → Add → Select file** → choose the JAR.
+3. The **RepeaterX** tab appears in the main Burp toolbar.
+
+---
 
 ## Building from Source
 
-Requirements: Java 17+, Gradle 8.5
+Builds run exclusively through GitHub Actions — no local JAR generation needed.
 
-```bash
-git clone https://github.com/zalakamal08/RepeaterX.git
-cd RepeaterX
-gradle shadowJar
-# Output: build/libs/RepeaterX-1.0.0.jar
+The workflow (`.github/workflows/build.yml`) triggers on every push to `main`:
+
+```
+JDK 17 (Temurin)  →  Gradle 8.5  →  gradle shadowJar  →  upload artifact
 ```
 
-The CI pipeline builds the JAR automatically on every push — download from the [Actions](https://github.com/zalakamal08/RepeaterX/actions) tab.
+Download the artifact from the **Actions** tab after a successful run.
 
-## AI Agent API
+---
 
-The extension starts a local REST API server at `http://127.0.0.1:7331`.
+## UI Overview
 
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/status` | API health and stats |
-| GET | `/tabs` | List all open tabs |
-| POST | `/tabs/create` | Create a new tab |
-| POST | `/tabs/delete` | Delete a tab by ID |
-| POST | `/tabs/duplicate` | Duplicate a tab |
-| GET | `/history` | Get request history (supports `?q=`, `?status=`, `?method=`, `?tab=`, `?limit=`, `?offset=`) |
-| GET | `/request/{id}` | Get full request by history entry ID |
-| GET | `/response/{id}` | Get full response by history entry ID |
-| POST | `/send` | Send an HTTP request |
-| POST | `/replay` | Replay a history entry |
-| GET | `/search?q={query}` | Search history |
-
-### Example Usage
-
-```bash
-# Check API status
-curl http://127.0.0.1:7331/status
-
-# List tabs
-curl http://127.0.0.1:7331/tabs
-
-# Create a new tab
-curl -X POST http://127.0.0.1:7331/tabs/create \
-  -H "Content-Type: application/json" \
-  -d '{"name": "IDOR Test", "rawRequest": ""}'
-
-# Send a request
-curl -X POST http://127.0.0.1:7331/send \
-  -H "Content-Type: application/json" \
-  -d '{
-    "host": "example.com",
-    "port": 443,
-    "https": true,
-    "method": "GET",
-    "url": "https://example.com/api/user/1",
-    "rawRequest": "GET /api/user/1 HTTP/1.1\r\nHost: example.com\r\nAuthorization: Bearer TOKEN\r\n\r\n"
-  }'
-
-# Search history
-curl "http://127.0.0.1:7331/history?q=admin&limit=20"
-
-# Replay a history entry
-curl -X POST http://127.0.0.1:7331/replay \
-  -H "Content-Type: application/json" \
-  -d '{"historyId": "uuid-of-history-entry"}'
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│  + New Tab  Duplicate  Rename │  Save  Load  Export  Search  Diff          │
+│                                                    [API 0.0.0.0:7331] ⚙   │
+├────────────────────────────────────────────────────────────────────────────┤
+│  [Tab 1] ×  [GET /api/user] ×  [POST /login] ×                            │
+├────────────────────────────────────────────────────────────────────────────┤
+│  [Send]  [Cancel]  │ ◄  ►  3 sent │  [Notes]   Target: https://…  [200]   │
+├────────────────────────────────────────────────────────────────────────────┤
+│              Request              │             Response                   │
+│                                   │                                        │
+│                                   │                                        │
+├────────────────────────────────────────────────────────────────────────────┤
+│  1.2 kB  |  234 ms                                                         │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Response Structures
+### Keyboard Shortcuts
 
-**Request object:**
+| Shortcut | Action |
+|---|---|
+| `Ctrl+K` | Send current tab's request |
+
+### History Navigation
+
+Use **◄** (older) and **►** (newer) to step through previously sent requests. The nav counter shows your position (`2 / 5`). Browsing history is read-only — return to the live editor by navigating to the newest entry or pressing **Send**.
+
+### Status Code Colors
+
+| Code range | Color | Example |
+|---|---|---|
+| 2xx | Green | 200 OK |
+| 3xx | Blue | 302 Found |
+| 4xx | Orange | 403 Forbidden |
+| 5xx | Red | 500 Internal Server Error |
+
+### API Server Settings
+
+Click **⚙** (next to the API indicator in the toolbar) to open the settings dialog. Change host and port, then click **Apply & Restart**. The new config is saved to `~/.repeaterx/api-config.json` when Burp closes.
+
+**Default:** `0.0.0.0:7331` (all interfaces).  
+Set to `127.0.0.1` to restrict to localhost only.
+
+---
+
+## Project Auto-Save
+
+RepeaterX saves your session to `~/.repeaterx/project.json` automatically:
+
+- **On Burp close** — via the extension unload handler
+- **Every 30 seconds** — while Burp is open
+
+On next launch the project is restored automatically. Use **Save** / **Load** in the toolbar for named project files.
+
+---
+
+## REST API
+
+The embedded HTTP server at `http://0.0.0.0:7331` (configurable) exposes a REST API for AI agents and automation tools.
+
+See **[docs/API.md](docs/API.md)** for the full endpoint reference with request/response schemas and examples.
+
+Quick health check:
+
+```bash
+curl http://localhost:7331/status
+```
+
 ```json
 {
-  "id": "uuid",
-  "method": "POST",
-  "url": "https://target.com/api/user",
-  "host": "target.com",
-  "port": 443,
-  "https": true,
-  "headers": [["Content-Type", "application/json"]],
-  "body": "{\"id\": 1}",
-  "rawRequest": "POST /api/user HTTP/1.1\r\n...",
-  "timestamp": 1718000000000
+  "status": "running",
+  "version": "1.0.0",
+  "host": "0.0.0.0",
+  "port": 7331,
+  "historySize": 42
 }
 ```
 
-**Response object:**
-```json
-{
-  "id": "uuid",
-  "statusCode": 200,
-  "statusMessage": "OK",
-  "headers": [["Content-Type", "application/json"]],
-  "body": "{\"user\": \"admin\"}",
-  "rawResponse": "HTTP/1.1 200 OK\r\n...",
-  "responseTime": 152,
-  "responseSize": 10240,
-  "timestamp": 1718000000000
-}
-```
-
-## Project Persistence
-
-Projects auto-save every 30 seconds to `~/.repeaterx/project.json`. All tabs, requests, responses, history, and notes are preserved across Burp restarts.
-
-Manual **Save Project** / **Load Project** buttons are in the toolbar.
+---
 
 ## Architecture
 
@@ -139,22 +148,75 @@ src/main/java/com/repeaterx/
 │   ├── RequestData.java         # HTTP request model
 │   ├── ResponseData.java        # HTTP response model
 │   ├── HistoryEntry.java        # Single history entry
-│   ├── TabData.java             # Tab state
-│   └── ProjectData.java        # Full project state
+│   ├── TabData.java             # Per-tab state
+│   └── ProjectData.java         # Full project state
 ├── ui/
-│   ├── RepeaterXPanel.java      # Main panel & tab container
+│   ├── RepeaterXPanel.java      # Main panel + tab container
 │   ├── RepeaterTab.java         # Individual tab UI
-│   ├── DiffPanel.java           # Request/response diff viewer
-│   └── SearchPanel.java         # Global search
+│   ├── DiffPanel.java           # Side-by-side diff viewer
+│   └── SearchPanel.java         # Global history search
 ├── api/
-│   └── ApiServer.java           # REST API server (port 7331)
+│   └── ApiServer.java           # REST API server
 ├── core/
-│   ├── HistoryManager.java      # History storage & search
+│   ├── ApiConfig.java           # API host/port config model
+│   ├── HistoryManager.java      # History storage and search
 │   ├── ProjectManager.java      # Project save/load/auto-save
-│   └── RequestSender.java       # HTTP request sender via Montoya API
+│   └── RequestSender.java       # HTTP sender via Montoya API
 └── burp/
     └── ContextMenuHandler.java  # "Send to RepeaterX" context menu
 ```
+
+---
+
+## Data Storage
+
+| File | Purpose |
+|---|---|
+| `~/.repeaterx/project.json` | Auto-saved project (tabs, requests, responses, notes, history) |
+| `~/.repeaterx/api-config.json` | API server host/port preference |
+
+---
+
+## MCP Server (AI Agent Integration)
+
+The `mcp-server/` directory contains a Python MCP server that bridges the Model Context Protocol to the RepeaterX REST API. This lets Claude and any MCP-compatible agent control Burp Suite directly.
+
+### Quick Setup
+
+```bash
+pip install -r mcp-server/requirements.txt
+```
+
+Add to Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "repeaterx": {
+      "command": "python",
+      "args": ["/path/to/RepeaterX/mcp-server/server.py"],
+      "env": { "REPEATERX_HOST": "127.0.0.1", "REPEATERX_PORT": "7331" }
+    }
+  }
+}
+```
+
+Restart Claude Desktop. You can then say:
+
+> "Send a POST to target.com/api/login and tell me the response."  
+> "Search RepeaterX history for 403 responses to /admin."  
+> "Open a new tab with this request and replay it with different user IDs."
+
+See **[mcp-server/README.md](mcp-server/README.md)** for the full tool reference.
+
+---
+
+## Contact
+
+**Author:** kamalzala07@gmail.com  
+**Repository:** https://github.com/zalakamal08/RepeaterX
+
+---
 
 ## License
 
