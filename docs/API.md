@@ -1,16 +1,83 @@
-# RepeaterX REST API Reference
+# RepeaterX API Reference
 
-The RepeaterX extension embeds a lightweight HTTP server that exposes all core functionality over a REST API. Use it to integrate AI agents, write automation scripts, or drive testing pipelines from external tools.
+RepeaterX exposes two complementary APIs on the same port (`0.0.0.0:7331` by default):
+
+| Transport | Endpoints | Best for |
+|---|---|---|
+| **REST** | `/status`, `/tabs`, `/history`, `/send`, … | Scripts, curl, automation pipelines |
+| **MCP SSE** | `/sse` + `/message` | AI agents (Claude, Cursor, VS Code Copilot) |
+
+Both APIs start automatically with the extension. The host/port are configurable at runtime via the ⚙ toolbar button.
 
 **Default base URL:** `http://localhost:7331`  
-**Content-Type:** `application/json` (all requests and responses)  
-**CORS:** `Access-Control-Allow-Origin: *` (all origins allowed)
-
-The host and port are configurable at runtime via the ⚙ button in the extension toolbar. The current address is always shown in the toolbar.
+**Content-Type:** `application/json`  
+**CORS:** `Access-Control-Allow-Origin: *`
 
 ---
 
-## Table of Contents
+## MCP Server (AI Agent Protocol)
+
+The extension embeds an MCP SSE server following [PortSwigger's architecture](https://github.com/PortSwigger/mcp-server). No external process needed.
+
+### Transport
+
+```
+GET  /sse       → long-lived SSE stream; immediately sends:
+                  event: endpoint
+                  data: /message?sessionId=<uuid>
+
+POST /message?sessionId=<uuid>  → JSON-RPC 2.0 request
+                                   HTTP 202 returned immediately
+                                   JSON-RPC response arrives on SSE stream
+```
+
+### Claude Desktop (stdio bridge)
+
+Claude Desktop requires stdio. Use [PortSwigger's proxy JAR](https://github.com/PortSwigger/mcp-server/raw/main/libs/mcp-proxy-all.jar):
+
+```json
+{
+  "mcpServers": {
+    "repeaterx": {
+      "command": "java",
+      "args": ["-jar", "/path/to/mcp-proxy-all.jar", "--sse-url", "http://127.0.0.1:7331"]
+    }
+  }
+}
+```
+
+### MCP Tools
+
+All tools return plain text (JSON-formatted string) in the MCP `content[].text` field.
+
+| Tool name | Required params | Description |
+|---|---|---|
+| `get_status` | — | Server status, tab count, history size |
+| `list_repeater_tabs` | — | All tabs with names, counts, notes |
+| `create_repeater_tab` | — | Open a new tab; optional `tab_name`, `raw_request` |
+| `delete_repeater_tab` | `tab_id` | Close a tab |
+| `send_http_request` | `content`, `target_hostname` | Send raw HTTP through Burp |
+| `get_request_history` | — | Paginated history; optional `query`, `status_code`, `method`, `tab_id`, `count`, `offset` |
+| `search_history` | `query` | Full-text search across history |
+| `replay_history_entry` | `entry_id` | Re-send a captured request |
+| `get_history_request` | `entry_id` | Full request for a history entry |
+| `get_history_response` | `entry_id` | Full response for a history entry |
+
+### `send_http_request` parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `content` | string | Yes | — | Full raw HTTP request (`\r\n` line endings) |
+| `target_hostname` | string | Yes | — | Target host, e.g. `api.example.com` |
+| `target_port` | integer | No | `443` | Target port |
+| `uses_https` | boolean | No | `true` | Use TLS |
+| `method` | string | No | `GET` | HTTP method |
+
+---
+
+## REST API
+
+### Table of Contents
 
 1. [Status](#1-status)
 2. [Tabs — List](#2-tabs--list)

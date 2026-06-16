@@ -156,7 +156,9 @@ src/main/java/com/repeaterx/
 │   ├── DiffPanel.java           # Side-by-side diff viewer
 │   └── SearchPanel.java         # Global history search
 ├── api/
-│   └── ApiServer.java           # REST API server
+│   └── ApiServer.java           # REST API server + MCP host
+├── mcp/
+│   └── McpSseServer.java        # Embedded MCP SSE server (PortSwigger-style)
 ├── core/
 │   ├── ApiConfig.java           # API host/port config model
 │   ├── HistoryManager.java      # History storage and search
@@ -179,35 +181,77 @@ src/main/java/com/repeaterx/
 
 ## MCP Server (AI Agent Integration)
 
-The `mcp-server/` directory contains a Python MCP server that bridges the Model Context Protocol to the RepeaterX REST API. This lets Claude and any MCP-compatible agent control Burp Suite directly.
+RepeaterX embeds an MCP SSE server **directly inside the Burp extension JAR** — no separate process needed. This follows the same architecture as [PortSwigger's official burp-mcp extension](https://github.com/PortSwigger/mcp-server).
 
-### Quick Setup
+The MCP server starts automatically alongside the REST API on the same port (`0.0.0.0:7331` by default):
 
-```bash
-pip install -r mcp-server/requirements.txt
+```
+GET  /sse      → SSE stream (MCP transport)
+POST /message  → JSON-RPC 2.0 requests
 ```
 
-Add to Claude Desktop config (`claude_desktop_config.json`):
+### Claude Desktop Setup
+
+Claude Desktop requires stdio transport. Use [PortSwigger's MCP proxy JAR](https://github.com/PortSwigger/mcp-server/raw/main/libs/mcp-proxy-all.jar) as the bridge:
+
+**1. Download the proxy:**
+```bash
+# macOS / Linux
+curl -L -o ~/mcp-proxy-all.jar \
+  https://github.com/PortSwigger/mcp-server/raw/main/libs/mcp-proxy-all.jar
+```
+
+**2. Add to Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 ```json
 {
   "mcpServers": {
     "repeaterx": {
-      "command": "python",
-      "args": ["/path/to/RepeaterX/mcp-server/server.py"],
-      "env": { "REPEATERX_HOST": "127.0.0.1", "REPEATERX_PORT": "7331" }
+      "command": "java",
+      "args": [
+        "-jar",
+        "/Users/yourname/mcp-proxy-all.jar",
+        "--sse-url",
+        "http://127.0.0.1:7331"
+      ]
     }
   }
 }
 ```
 
-Restart Claude Desktop. You can then say:
+**3. Restart Claude Desktop** — RepeaterX tools will appear.
 
-> "Send a POST to target.com/api/login and tell me the response."  
-> "Search RepeaterX history for 403 responses to /admin."  
-> "Open a new tab with this request and replay it with different user IDs."
+### SSE Clients (Cursor, VS Code, etc.)
 
-See **[mcp-server/README.md](mcp-server/README.md)** for the full tool reference.
+Connect directly to the SSE endpoint:
+
+```
+http://127.0.0.1:7331/sse
+```
+
+### Available MCP Tools
+
+| Tool | Description |
+|---|---|
+| `get_status` | Server status and open tab/history count |
+| `list_repeater_tabs` | All open tabs with names, counts, notes |
+| `create_repeater_tab` | Open a new tab (optionally pre-load a request) |
+| `delete_repeater_tab` | Close a tab |
+| `send_http_request` | Send a request through Burp's engine |
+| `get_request_history` | Paginated history with filters (status, method, tab, search) |
+| `search_history` | Full-text search across all history |
+| `replay_history_entry` | Re-send a captured request |
+| `get_history_request` | Full request details for a history entry |
+| `get_history_response` | Full response details for a history entry |
+
+### Example Prompts
+
+> "Send a GET to api.example.com/users and tell me the response."  
+> "Search my RepeaterX history for any 403s on /admin endpoints."  
+> "Create a new tab called 'IDOR Test' with this request, then replay it with user IDs 1 through 10."  
+> "List all my open tabs and their last status codes."
+
+See **[docs/API.md](docs/API.md)** for the full REST + MCP reference.
 
 ---
 

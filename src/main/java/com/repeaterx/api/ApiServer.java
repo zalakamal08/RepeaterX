@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.repeaterx.core.HistoryManager;
 import com.repeaterx.core.ProjectManager;
 import com.repeaterx.core.RequestSender;
+import com.repeaterx.mcp.McpSseServer;
 import com.repeaterx.model.HistoryEntry;
 import com.repeaterx.model.RequestData;
 import com.repeaterx.model.TabData;
@@ -39,6 +40,7 @@ public class ApiServer {
     private Supplier<List<TabData>> tabsSupplier;
     private TabOperations tabOps;
     private StartListener startListener;
+    private final McpSseServer mcpSseServer;
 
     public interface TabOperations {
         TabData createTab(String name, String rawRequest);
@@ -58,14 +60,31 @@ public class ApiServer {
         this.historyManager = historyManager;
         this.requestSender = requestSender;
         this.projectManager = projectManager;
+        this.mcpSseServer = new McpSseServer(historyManager, requestSender);
     }
 
-    public void setTabOperations(TabOperations ops) { this.tabOps = ops; }
-    public void setTabsSupplier(Supplier<List<TabData>> supplier) { this.tabsSupplier = supplier; }
+    public void setTabOperations(TabOperations ops) {
+        this.tabOps = ops;
+        // Forward tab ops to the MCP server with the same interface
+        mcpSseServer.setTabOperations(new McpSseServer.TabOperations() {
+            @Override public TabData createTab(String name, String raw) { return ops.createTab(name, raw); }
+            @Override public boolean deleteTab(String id) { return ops.deleteTab(id); }
+            @Override public List<TabData> getAllTabs() { return ops.getAllTabs(); }
+        });
+    }
+
+    public void setTabsSupplier(Supplier<List<TabData>> supplier) {
+        this.tabsSupplier = supplier;
+        mcpSseServer.setTabsSupplier(supplier);
+    }
+
     public void setStartListener(StartListener l) { this.startListener = l; }
+
+    public McpSseServer getMcpSseServer() { return mcpSseServer; }
 
     public synchronized void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(currentHost, currentPort), 20);
+        // REST API endpoints
         server.createContext("/tabs", this::handleTabs);
         server.createContext("/history", this::handleHistory);
         server.createContext("/request/", this::handleRequest);
@@ -76,6 +95,8 @@ public class ApiServer {
         server.createContext("/load-project", this::handleLoadProject);
         server.createContext("/search", this::handleSearch);
         server.createContext("/status", this::handleStatus);
+        // MCP SSE endpoints (PortSwigger-style: /sse + /message)
+        mcpSseServer.registerHandlers(server);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
         if (startListener != null) startListener.onStart(currentHost, currentPort);
@@ -83,6 +104,7 @@ public class ApiServer {
 
     public synchronized void stop() {
         if (server != null) {
+            mcpSseServer.shutdown();
             server.stop(1);
             server = null;
             if (startListener != null) startListener.onStop();
