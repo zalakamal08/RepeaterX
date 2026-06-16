@@ -90,8 +90,8 @@ public class ApiServer {
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     public synchronized void start() throws IOException {
+        mcpSseServer.setServerAddress(currentHost, currentPort);
         server = SimpleHttpServer.create(currentHost, currentPort);
-        server.createContext("/",       this::handleRoot);
         server.createContext("/status", this::handleStatus);
         mcpSseServer.registerHandlers(server);
         server.start();
@@ -119,15 +119,6 @@ public class ApiServer {
     public String  getCurrentHost() { return currentHost; }
     public int     getCurrentPort() { return currentPort; }
     public boolean isRunning()      { return server != null; }
-
-    // ── Root redirect ─────────────────────────────────────────────────────────
-
-    private void handleRoot(HttpExchange ex) throws IOException {
-        ex.getResponseHeaders().set("Location", "/sse");
-        ex.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
-        ex.sendResponseHeaders(302, -1);
-        ex.close();
-    }
 
     // ── Health check ──────────────────────────────────────────────────────────
 

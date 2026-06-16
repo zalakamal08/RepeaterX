@@ -41,6 +41,9 @@ public class McpSseServer {
     private Supplier<List<TabData>> tabsSupplier;
     private TabOperations           tabOps;
 
+    private volatile String serverHost = "127.0.0.1";
+    private volatile int    serverPort = 7331;
+
     private final Map<String, SseSession> sessions = new ConcurrentHashMap<>();
     private final ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "mcp-heartbeat");
@@ -62,11 +65,16 @@ public class McpSseServer {
 
     public void setTabOperations(TabOperations ops)         { this.tabOps = ops; }
     public void setTabsSupplier(Supplier<List<TabData>> s)  { this.tabsSupplier = s; }
+    public void setServerAddress(String host, int port) {
+        this.serverHost = "0.0.0.0".equals(host) ? "127.0.0.1" : host;
+        this.serverPort = port;
+    }
 
     // ── Registration ──────────────────────────────────────────────────────────
 
     public void registerHandlers(SimpleHttpServer server) {
         server.createContext("/sse",     this::handleSse);
+        server.createContext("/",        this::handleSse);   // proxy may connect to bare host:port
         server.createContext("/message", this::handleMessage);
     }
 
@@ -120,8 +128,15 @@ public class McpSseServer {
         SseSession session   = new SseSession(sessionId, out);
         sessions.put(sessionId, session);
 
+        // Build absolute message URL — proxy requires a full URI, not a relative path.
+        // Prefer the Host request header (reflects the real address the client used).
+        String hostHeader = ex.getRequestHeaders().getOrDefault("host", "");
+        String baseUrl = hostHeader.isEmpty()
+            ? "http://" + serverHost + ":" + serverPort
+            : "http://" + hostHeader;
+
         try {
-            session.send("endpoint", "/message?sessionId=" + sessionId);
+            session.send("endpoint", baseUrl + "/message?sessionId=" + sessionId);
             session.latch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
