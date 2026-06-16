@@ -30,40 +30,34 @@ public class RepeaterTab extends JPanel {
         void onTitleChange(String tabId, String newTitle);
     }
 
-    private final MontoyaApi api;
-    private final TabData tabData;
-    private final HistoryManager historyManager;
-    private final RequestSender requestSender;
-    private TitleListener titleListener;
+    private final MontoyaApi      api;
+    private final TabData         tabData;
+    private final HistoryManager  historyManager;
+    private final RequestSender   requestSender;
+    private TitleListener         titleListener;
 
-    private HttpRequestEditor requestEditor;
+    private HttpRequestEditor  requestEditor;
     private HttpResponseEditor responseEditor;
 
-    private JButton sendButton;
-    private JButton cancelButton;
-    private JButton prevButton;
-    private JButton nextButton;
-    private JLabel navLabel;
-    private JLabel statusLabel;
-    private JLabel timeLabel;
-    private JLabel sizeLabel;
+    private JButton    sendButton;
+    private JButton    prevButton;
+    private JButton    nextButton;
+    private JLabel     navLabel;
+    private JLabel     statusLabel;
+    private JLabel     timeLabel;
+    private JLabel     sizeLabel;
     private JTextField targetField;
-    private JTextArea notesArea;
-    private JPanel notesPanel;
-    private JSplitPane outerSplit;
-    private JToggleButton notesToggle;
+    private JLabel     bottomStatusLabel;
 
-    // Bottom status bar (mirroring Burp's "N bytes | N millis")
-    private JLabel bottomStatusLabel;
+    private boolean isSending  = false;
+    private int     historyPos = -1; // -1 = live, 0 = most recent
 
-    private boolean isSending = false;
-    private int historyPos = -1; // -1 = live, 0 = most recent, etc.
-
-    public RepeaterTab(MontoyaApi api, TabData tabData, HistoryManager historyManager, RequestSender requestSender) {
-        this.api = api;
-        this.tabData = tabData;
+    public RepeaterTab(MontoyaApi api, TabData tabData,
+                       HistoryManager historyManager, RequestSender requestSender) {
+        this.api            = api;
+        this.tabData        = tabData;
         this.historyManager = historyManager;
-        this.requestSender = requestSender;
+        this.requestSender  = requestSender;
         initUI();
         loadFromTabData();
     }
@@ -73,17 +67,15 @@ public class RepeaterTab extends JPanel {
     private void initUI() {
         setLayout(new BorderLayout(0, 0));
 
-        requestEditor = api.userInterface().createHttpRequestEditor();
+        requestEditor  = api.userInterface().createHttpRequestEditor();
         responseEditor = api.userInterface().createHttpResponseEditor(EditorOptions.READ_ONLY);
 
         add(buildToolbar(), BorderLayout.NORTH);
 
-        // Request panel
         JPanel reqWrapper = new JPanel(new BorderLayout(0, 0));
         reqWrapper.add(makeHeader("Request"), BorderLayout.NORTH);
         reqWrapper.add(requestEditor.uiComponent(), BorderLayout.CENTER);
 
-        // Response panel
         JPanel respWrapper = new JPanel(new BorderLayout(0, 0));
         respWrapper.add(makeHeader("Response"), BorderLayout.NORTH);
         respWrapper.add(responseEditor.uiComponent(), BorderLayout.CENTER);
@@ -93,16 +85,7 @@ public class RepeaterTab extends JPanel {
         editorSplit.setBorder(null);
         editorSplit.setContinuousLayout(true);
 
-        notesPanel = buildNotesPanel();
-        notesPanel.setVisible(false);
-
-        outerSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, editorSplit, notesPanel);
-        outerSplit.setResizeWeight(1.0);
-        outerSplit.setDividerSize(0);
-        outerSplit.setBorder(null);
-        outerSplit.setContinuousLayout(true);
-
-        add(outerSplit, BorderLayout.CENTER);
+        add(editorSplit, BorderLayout.CENTER);
         add(buildBottomBar(), BorderLayout.SOUTH);
     }
 
@@ -110,7 +93,7 @@ public class RepeaterTab extends JPanel {
         JLabel lbl = new JLabel("  " + text);
         lbl.setFont(lbl.getFont().deriveFont(Font.BOLD, 12f));
         lbl.setBorder(new CompoundBorder(
-            new MatteBorder(0, 0, 1, 0, separator()),
+            new MatteBorder(0, 0, 1, 0, sep()),
             new EmptyBorder(4, 6, 4, 6)
         ));
         return lbl;
@@ -118,16 +101,16 @@ public class RepeaterTab extends JPanel {
 
     private JPanel buildToolbar() {
         JPanel bar = new JPanel(new BorderLayout(0, 0));
-        bar.setBorder(new MatteBorder(0, 0, 1, 0, separator()));
+        bar.setBorder(new MatteBorder(0, 0, 1, 0, sep()));
 
-        // Left: Send, Cancel, |, ◄ ►, nav counter, |, Notes toggle
+        // Left: Send | ◄ ► counter
         JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 3));
         left.setBorder(new EmptyBorder(0, 6, 0, 0));
 
         sendButton = makeSendButton();
-        cancelButton = makeCancelButton();
-        prevButton = makeNavButton("◄", "Previous request in history (older)");
-        nextButton = makeNavButton("►", "Next request in history (newer)");
+
+        prevButton = makeNavButton("◄", "Older request");
+        nextButton = makeNavButton("►", "Newer request");
         prevButton.addActionListener(e -> navigateHistory(-1));
         nextButton.addActionListener(e -> navigateHistory(1));
 
@@ -137,23 +120,13 @@ public class RepeaterTab extends JPanel {
         navLabel.setPreferredSize(new Dimension(68, 22));
         navLabel.setHorizontalAlignment(SwingConstants.CENTER);
 
-        notesToggle = new JToggleButton("Notes");
-        notesToggle.setFont(notesToggle.getFont().deriveFont(Font.PLAIN, 11f));
-        notesToggle.setFocusPainted(false);
-        notesToggle.setPreferredSize(new Dimension(58, 26));
-        notesToggle.setToolTipText("Toggle per-tab notes panel");
-        notesToggle.addActionListener(e -> toggleNotes(notesToggle.isSelected()));
-
         left.add(sendButton);
-        left.add(cancelButton);
         left.add(vSep());
         left.add(prevButton);
         left.add(nextButton);
         left.add(navLabel);
-        left.add(vSep());
-        left.add(notesToggle);
 
-        // Right: Target URL, status chip
+        // Right: Target | Status  Time  Size
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 3));
         right.setBorder(new EmptyBorder(0, 0, 0, 8));
 
@@ -188,8 +161,7 @@ public class RepeaterTab extends JPanel {
 
     private JPanel buildBottomBar() {
         JPanel bar = new JPanel(new BorderLayout(0, 0));
-        bar.setBorder(new MatteBorder(1, 0, 0, 0, separator()));
-        bar.setBackground(UIManager.getColor("Panel.background"));
+        bar.setBorder(new MatteBorder(1, 0, 0, 0, sep()));
 
         bottomStatusLabel = new JLabel("  Ready");
         bottomStatusLabel.setFont(bottomStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
@@ -197,33 +169,6 @@ public class RepeaterTab extends JPanel {
         bottomStatusLabel.setBorder(new EmptyBorder(2, 8, 2, 8));
         bar.add(bottomStatusLabel, BorderLayout.WEST);
         return bar;
-    }
-
-    private JPanel buildNotesPanel() {
-        JPanel panel = new JPanel(new BorderLayout(0, 0));
-        panel.setPreferredSize(new Dimension(0, 160));
-        panel.setBorder(new MatteBorder(1, 0, 0, 0, separator()));
-
-        JLabel header = new JLabel("  Notes");
-        header.setFont(header.getFont().deriveFont(Font.BOLD, 12f));
-        header.setBorder(new CompoundBorder(
-            new MatteBorder(0, 0, 1, 0, separator()),
-            new EmptyBorder(3, 6, 3, 6)
-        ));
-
-        notesArea = new JTextArea();
-        notesArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        notesArea.setLineWrap(true);
-        notesArea.setWrapStyleWord(true);
-        notesArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { saveNotes(); }
-            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { saveNotes(); }
-            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { saveNotes(); }
-        });
-
-        panel.add(header, BorderLayout.NORTH);
-        panel.add(new JScrollPane(notesArea), BorderLayout.CENTER);
-        return panel;
     }
 
     // ── Button factories ──────────────────────────────────────────────────────
@@ -239,7 +184,6 @@ public class RepeaterTab extends JPanel {
         btn.setPreferredSize(new Dimension(72, 26));
         btn.setToolTipText("Send request  [Ctrl+K]");
         btn.addActionListener(e -> triggerSend());
-        // Hover effect
         btn.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override public void mouseEntered(java.awt.event.MouseEvent e) {
                 if (btn.isEnabled()) btn.setBackground(new Color(210, 70, 10));
@@ -248,15 +192,6 @@ public class RepeaterTab extends JPanel {
                 btn.setBackground(new Color(230, 90, 30));
             }
         });
-        return btn;
-    }
-
-    private JButton makeCancelButton() {
-        JButton btn = new JButton("Cancel");
-        btn.setEnabled(false);
-        btn.setFocusPainted(false);
-        btn.setPreferredSize(new Dimension(68, 26));
-        btn.addActionListener(e -> cancelSend());
         return btn;
     }
 
@@ -286,7 +221,7 @@ public class RepeaterTab extends JPanel {
         return s;
     }
 
-    private Color separator() {
+    private Color sep() {
         Color c = UIManager.getColor("Separator.foreground");
         return c != null ? c : new Color(200, 200, 200);
     }
@@ -297,7 +232,6 @@ public class RepeaterTab extends JPanel {
         if (isSending) return;
         isSending = true;
         sendButton.setEnabled(false);
-        cancelButton.setEnabled(true);
         sendButton.setText("…");
         setStatusChip("-", null);
         bottomStatusLabel.setText("  Sending…");
@@ -311,7 +245,6 @@ public class RepeaterTab extends JPanel {
         requestSender.sendAsync(reqData, result -> SwingUtilities.invokeLater(() -> {
             isSending = false;
             sendButton.setEnabled(true);
-            cancelButton.setEnabled(false);
             sendButton.setText("Send");
 
             if (result.isSuccess()) {
@@ -341,15 +274,6 @@ public class RepeaterTab extends JPanel {
         }));
     }
 
-    private void cancelSend() {
-        isSending = false;
-        sendButton.setEnabled(true);
-        cancelButton.setEnabled(false);
-        sendButton.setText("Send");
-        setStatusChip("-", null);
-        bottomStatusLabel.setText("  Cancelled");
-    }
-
     private void navigateHistory(int direction) {
         List<HistoryEntry> history = tabData.getHistory();
         if (history == null || history.isEmpty()) return;
@@ -366,12 +290,12 @@ public class RepeaterTab extends JPanel {
     private void loadHistoryPosition() {
         List<HistoryEntry> history = tabData.getHistory();
         if (historyPos == -1) {
-            if (tabData.getCurrentRequest() != null) setEditorReq(tabData.getCurrentRequest().getRawRequest());
-            if (tabData.getLatestResponse() != null) setEditorResp(tabData.getLatestResponse().getRawResponse());
-            if (tabData.getLatestResponse() != null) applyStatus(tabData.getLatestResponse().getStatusCode());
+            if (tabData.getCurrentRequest()  != null) setEditorReq(tabData.getCurrentRequest().getRawRequest());
+            if (tabData.getLatestResponse()  != null) setEditorResp(tabData.getLatestResponse().getRawResponse());
+            if (tabData.getLatestResponse()  != null) applyStatus(tabData.getLatestResponse().getStatusCode());
         } else if (history != null && historyPos < history.size()) {
             HistoryEntry entry = history.get(historyPos);
-            if (entry.getRequest() != null) setEditorReq(entry.getRequest().getRawRequest());
+            if (entry.getRequest()  != null) setEditorReq(entry.getRequest().getRawRequest());
             if (entry.getResponse() != null) {
                 setEditorResp(entry.getResponse().getRawResponse());
                 applyStatus(entry.getResponse().getStatusCode());
@@ -384,20 +308,11 @@ public class RepeaterTab extends JPanel {
         }
     }
 
-    private void toggleNotes(boolean show) {
-        notesPanel.setVisible(show);
-        outerSplit.setDividerSize(show ? 5 : 0);
-        outerSplit.setResizeWeight(show ? 0.78 : 1.0);
-        if (show) outerSplit.setDividerLocation((int) (getHeight() * 0.78));
-        revalidate();
-        repaint();
-    }
-
     // ── Status helpers ────────────────────────────────────────────────────────
 
     private void applyStatus(int code) {
         Color bg, fg;
-        if (code >= 200 && code < 300)      { bg = new Color(210, 245, 210); fg = new Color(0, 120, 0); }
+        if      (code >= 200 && code < 300) { bg = new Color(210, 245, 210); fg = new Color(0, 120, 0); }
         else if (code >= 300 && code < 400) { bg = new Color(210, 230, 255); fg = new Color(0, 80, 180); }
         else if (code >= 400 && code < 500) { bg = new Color(255, 235, 200); fg = new Color(180, 80, 0); }
         else if (code >= 500)               { bg = new Color(255, 210, 210); fg = new Color(180, 0, 0); }
@@ -417,13 +332,13 @@ public class RepeaterTab extends JPanel {
         int total = (history != null) ? history.size() : 0;
         prevButton.setEnabled(total > 0 && (historyPos == -1 || historyPos < total - 1));
         nextButton.setEnabled(historyPos > 0 || (historyPos == 0 && total > 0));
-        if (total == 0)          navLabel.setText("");
+        if (total == 0)            navLabel.setText("");
         else if (historyPos == -1) navLabel.setText(total + " sent");
         else                       navLabel.setText((historyPos + 1) + " / " + total);
     }
 
     private void updateTabTitle(RequestData req) {
-        String path = extractPath(req.getUrl());
+        String path  = extractPath(req.getUrl());
         String title = req.getMethod() + " " + path;
         tabData.setName(title);
         if (titleListener != null) titleListener.onTitleChange(tabData.getId(), title);
@@ -452,8 +367,8 @@ public class RepeaterTab extends JPanel {
             String[] parts = lines[0].trim().split("\\s+");
             if (parts.length >= 2) { method = parts[0]; path = parts[1]; }
         }
-        StringBuilder body = new StringBuilder();
-        boolean inBody = false;
+        StringBuilder body  = new StringBuilder();
+        boolean       inBody = false;
         for (int i = 1; i < lines.length; i++) {
             if (lines[i].isEmpty() && !inBody) { inBody = true; continue; }
             if (!inBody) {
@@ -489,8 +404,8 @@ public class RepeaterTab extends JPanel {
             if (tabData.getMetadata() == null) tabData.setMetadata(new HashMap<>());
             boolean sec = "https".equalsIgnoreCase(u.getProtocol());
             int p = u.getPort() > 0 ? u.getPort() : (sec ? 443 : 80);
-            tabData.getMetadata().put("host", u.getHost());
-            tabData.getMetadata().put("port", p);
+            tabData.getMetadata().put("host",  u.getHost());
+            tabData.getMetadata().put("port",  p);
             tabData.getMetadata().put("https", sec);
         } catch (Exception ignored) {}
     }
@@ -502,8 +417,8 @@ public class RepeaterTab extends JPanel {
         Object s = tabData.getMetadata().get("https");
         if (h == null || h.toString().isEmpty()) return "";
         boolean sec = s != null && Boolean.parseBoolean(s.toString());
-        int pNum = p != null ? Integer.parseInt(p.toString()) : (sec ? 443 : 80);
-        boolean std = (sec && pNum == 443) || (!sec && pNum == 80);
+        int     pNum = p != null ? Integer.parseInt(p.toString()) : (sec ? 443 : 80);
+        boolean std  = (sec && pNum == 443) || (!sec && pNum == 80);
         return (sec ? "https" : "http") + "://" + h + (std ? "" : ":" + pNum);
     }
 
@@ -514,8 +429,8 @@ public class RepeaterTab extends JPanel {
     }
 
     private String formatSize(int bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1024 * 1024) return String.format("%.1f kB", bytes / 1024.0);
+        if (bytes < 1024)       return bytes + " B";
+        if (bytes < 1024*1024)  return String.format("%.1f kB", bytes / 1024.0);
         return String.format("%.1f MB", bytes / (1024.0 * 1024));
     }
 
@@ -541,22 +456,17 @@ public class RepeaterTab extends JPanel {
             bottomStatusLabel.setText("  " + formatSize(tabData.getLatestResponse().getResponseSize())
                 + "  |  " + tabData.getLatestResponse().getResponseTime() + " ms");
         }
-        if (notesArea != null && tabData.getNotes() != null) notesArea.setText(tabData.getNotes());
         String target = buildTargetUrl();
         if (targetField != null && !target.isEmpty()) targetField.setText(target);
         updateNavButtons();
-    }
-
-    private void saveNotes() {
-        if (notesArea != null) tabData.setNotes(notesArea.getText());
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     public void setRequest(String rawRequest, String host, int port, boolean https) {
         if (tabData.getMetadata() == null) tabData.setMetadata(new HashMap<>());
-        tabData.getMetadata().put("host", host);
-        tabData.getMetadata().put("port", port);
+        tabData.getMetadata().put("host",  host);
+        tabData.getMetadata().put("port",  port);
         tabData.getMetadata().put("https", https);
         boolean std = (https && port == 443) || (!https && port == 80);
         if (targetField != null)
@@ -565,6 +475,6 @@ public class RepeaterTab extends JPanel {
     }
 
     public void setTitleListener(TitleListener l) { this.titleListener = l; }
-    public TabData getTabData() { return tabData; }
-    public String getTabId() { return tabData.getId(); }
+    public TabData getTabData()                    { return tabData; }
+    public String  getTabId()                      { return tabData.getId(); }
 }

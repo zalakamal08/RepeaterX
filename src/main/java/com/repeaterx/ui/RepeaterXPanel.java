@@ -1,8 +1,6 @@
 package com.repeaterx.ui;
 
 import burp.api.montoya.MontoyaApi;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
 import com.repeaterx.api.ApiServer;
 import com.repeaterx.core.HistoryManager;
 import com.repeaterx.core.ProjectManager;
@@ -18,7 +16,6 @@ import java.awt.event.ActionEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.io.File;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -94,23 +91,14 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         left.add(renameBtn);
         left.add(vSep());
 
-        JButton saveBtn   = toolbarButton("Save",    "Save project to file");
-        JButton loadBtn   = toolbarButton("Load",    "Load project from file");
-        JButton exportBtn = toolbarButton("Export",  "Export tab or history");
-        JButton searchBtn = toolbarButton("Search",  "Search across all history  [Ctrl+F]");
-        JButton diffBtn   = toolbarButton("Diff",    "Compare two responses side-by-side");
+        JButton saveBtn = toolbarButton("Save", "Save project to file");
+        JButton loadBtn = toolbarButton("Load", "Load project from file");
 
         saveBtn.addActionListener(e -> saveProject());
         loadBtn.addActionListener(e -> loadProject());
-        exportBtn.addActionListener(e -> showExportMenu(exportBtn));
-        searchBtn.addActionListener(e -> showSearchDialog());
-        diffBtn.addActionListener(e -> showDiffDialog());
 
         left.add(saveBtn);
         left.add(loadBtn);
-        left.add(exportBtn);
-        left.add(searchBtn);
-        left.add(diffBtn);
 
         // Right section: API status + settings
         JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 3));
@@ -336,7 +324,6 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         String newId = UUID.randomUUID().toString();
         TabData copy = new TabData(newId, orig.getName() + " (copy)");
         copy.setCurrentRequest(orig.getCurrentRequest());
-        copy.setNotes(orig.getNotes() != null ? orig.getNotes() : "");
         if (orig.getMetadata() != null) copy.setMetadata(new java.util.HashMap<>(orig.getMetadata()));
 
         RepeaterTab newTab = new RepeaterTab(api, copy, historyManager, requestSender);
@@ -393,86 +380,6 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
                 JOptionPane.showMessageDialog(this, "Load failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
             }
         }
-    }
-
-    private void showExportMenu(JButton source) {
-        JPopupMenu menu = new JPopupMenu();
-        JMenuItem json  = new JMenuItem("Export Tab as JSON");
-        JMenuItem txt   = new JMenuItem("Export Tab as TXT");
-        JMenuItem hist  = new JMenuItem("Export History as JSON");
-        json.addActionListener(e -> exportTab("json"));
-        txt.addActionListener(e -> exportTab("txt"));
-        hist.addActionListener(e -> exportHistory());
-        menu.add(json); menu.add(txt); menu.addSeparator(); menu.add(hist);
-        menu.show(source, 0, source.getHeight());
-    }
-
-    private void exportTab(String fmt) {
-        RepeaterTab current = getCurrentTab();
-        if (current == null) { JOptionPane.showMessageDialog(this, "No active tab."); return; }
-        JFileChooser fc = new JFileChooser();
-        fc.setSelectedFile(new File("repeaterx-tab." + fmt));
-        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        try {
-            TabData tab = current.getTabData();
-            String content;
-            if ("json".equals(fmt)) {
-                content = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT).writeValueAsString(tab);
-            } else {
-                StringBuilder sb = new StringBuilder("=== Tab: ").append(tab.getName()).append(" ===\n\n");
-                if (tab.getCurrentRequest() != null)
-                    sb.append("--- REQUEST ---\n").append(tab.getCurrentRequest().getRawRequest()).append("\n\n");
-                if (tab.getLatestResponse() != null)
-                    sb.append("--- RESPONSE ---\n").append(tab.getLatestResponse().getRawResponse()).append("\n");
-                if (tab.getNotes() != null && !tab.getNotes().isBlank())
-                    sb.append("\n--- NOTES ---\n").append(tab.getNotes());
-                content = sb.toString();
-            }
-            Files.writeString(fc.getSelectedFile().toPath(), content);
-            JOptionPane.showMessageDialog(this, "Exported successfully.");
-        } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    private void exportHistory() {
-        JFileChooser fc = new JFileChooser();
-        fc.setSelectedFile(new File("repeaterx-history.json"));
-        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        try {
-            String content = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT)
-                .writeValueAsString(historyManager.getAllHistory());
-            Files.writeString(fc.getSelectedFile().toPath(), content);
-            JOptionPane.showMessageDialog(this, "History exported.");
-        } catch (Exception e) {
-            JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-        }
-    }
-
-    private void showSearchDialog() {
-        JDialog dlg = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Global Search", false);
-        dlg.setSize(900, 540);
-        dlg.setLocationRelativeTo(this);
-        dlg.add(new SearchPanel(historyManager));
-        dlg.setVisible(true);
-    }
-
-    private void showDiffDialog() {
-        RepeaterTab current = getCurrentTab();
-        List<com.repeaterx.model.HistoryEntry> entries = new java.util.ArrayList<>();
-        if (current != null && current.getTabData() != null) {
-            List<com.repeaterx.model.HistoryEntry> hist = current.getTabData().getHistory();
-            if (hist != null) entries.addAll(hist);
-        }
-        if (entries.isEmpty()) {
-            // Fall back to global history if the current tab has none
-            entries.addAll(historyManager.getAllHistory());
-        }
-        JDialog dlg = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Response Diff", false);
-        dlg.setSize(1100, 680);
-        dlg.setLocationRelativeTo(this);
-        dlg.add(new DiffPanel(entries));
-        dlg.setVisible(true);
     }
 
     // ── Project data helpers ──────────────────────────────────────────────────
