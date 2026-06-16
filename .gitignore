@@ -1,0 +1,9 @@
+.gradle/
+build/
+*.class
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+mobile_agent.db
+screenshots/

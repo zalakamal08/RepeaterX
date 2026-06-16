@@ -1,0 +1,40 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'com.repeaterx'
+version = '1.0.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    compileOnly 'net.portswigger.burp.extensions:montoya-api:2024.12'
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.16.1'
+    implementation 'com.fasterxml.jackson.core:jackson-annotations:2.16.1'
+    implementation 'com.fasterxml.jackson.core:jackson-core:2.16.1'
+}
+
+jar {
+    manifest {
+        attributes(
+            'Burp-Extension-Class': 'com.repeaterx.RepeaterXExtension'
+        )
+    }
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    minimize {
+        exclude(dependency('com.fasterxml.jackson.core:.*'))
+    }
+}
+
+build.dependsOn shadowJar

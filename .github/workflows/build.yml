@@ -1,0 +1,58 @@
+name: Build RepeaterX
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Build shadow JAR
+        run: gradle shadowJar --no-daemon --info
+
+      - name: Verify JAR exists
+        run: |
+          ls -la build/libs/
+          JAR=$(ls build/libs/RepeaterX-*.jar 2>/dev/null | head -1)
+          if [ -z "$JAR" ]; then
+            echo "ERROR: No JAR file found in build/libs/"
+            exit 1
+          fi
+          echo "Built: $JAR ($(du -sh $JAR | cut -f1))"
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RepeaterX-${{ github.sha }}
+          path: build/libs/RepeaterX-*.jar
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: build/libs/RepeaterX-*.jar
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
