@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import com.repeaterx.model.RequestData;
 import com.repeaterx.model.ResponseData;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -63,7 +64,7 @@ public class RequestSender {
     private HttpRequest buildHttpRequest(RequestData req, HttpService service) {
         String raw = req.getRawRequest();
         if (raw != null && !raw.isBlank()) {
-            return HttpRequest.httpRequest(service, ByteArray.byteArray(raw.getBytes()));
+            return HttpRequest.httpRequest(service, ByteArray.byteArray(raw.getBytes(StandardCharsets.UTF_8)));
         }
         // Build raw request from components
         String path = "/";
@@ -96,7 +97,7 @@ public class RequestSender {
             sb.append("Content-Length: ").append(body.getBytes().length).append("\r\n");
         }
         sb.append("\r\n").append(body);
-        return HttpRequest.httpRequest(service, ByteArray.byteArray(sb.toString().getBytes()));
+        return HttpRequest.httpRequest(service, ByteArray.byteArray(sb.toString().getBytes(StandardCharsets.UTF_8)));
     }
 
     private ResponseData convertResponse(HttpResponse resp, long elapsed) {

@@ -239,7 +239,7 @@ public class RepeaterTab extends JPanel {
 
         syncTargetToMetadata();
         byte[] rawBytes = requestEditor.getRequest().toByteArray().getBytes();
-        RequestData reqData = parseRawRequest(new String(rawBytes));
+        RequestData reqData = parseRawRequest(new String(rawBytes, StandardCharsets.UTF_8));
         tabData.setCurrentRequest(reqData);
         historyPos = -1;
 
