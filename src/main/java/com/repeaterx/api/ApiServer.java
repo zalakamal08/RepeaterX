@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.repeaterx.core.HistoryManager;
 import com.repeaterx.core.RequestSender;
 import com.repeaterx.http.HttpExchange;
+import java.util.concurrent.Future;
 import com.repeaterx.http.SimpleHttpServer;
 import com.repeaterx.mcp.McpSseServer;
 import com.repeaterx.model.TabData;
@@ -29,9 +30,10 @@ public class ApiServer {
     private final McpSseServer   mcpSseServer;
 
     public interface TabOperations {
-        TabData       createTab(String name, String rawRequest);
-        boolean       deleteTab(String id);
+        TabData createTab(String name, String rawRequest);
+        boolean deleteTab(String id);
         List<TabData> getAllTabs();
+        Future<RequestSender.SendResult> sendInTab(String tabId);
     }
 
     public ApiServer(HistoryManager historyManager, RequestSender requestSender) {
@@ -41,9 +43,10 @@ public class ApiServer {
 
     public void setTabOperations(TabOperations ops) {
         mcpSseServer.setTabOperations(new McpSseServer.TabOperations() {
-            @Override public TabData       createTab(String name, String raw) { return ops.createTab(name, raw); }
-            @Override public boolean       deleteTab(String id)               { return ops.deleteTab(id); }
-            @Override public List<TabData> getAllTabs()                        { return ops.getAllTabs(); }
+            @Override public TabData                        createTab(String name, String raw) { return ops.createTab(name, raw); }
+            @Override public boolean                        deleteTab(String id)               { return ops.deleteTab(id); }
+            @Override public List<TabData>                  getAllTabs()                        { return ops.getAllTabs(); }
+            @Override public Future<RequestSender.SendResult> sendInTab(String tabId)          { return ops.sendInTab(tabId); }
         });
     }
 

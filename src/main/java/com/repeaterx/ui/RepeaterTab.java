@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Future;
 
 public class RepeaterTab extends JPanel {
 
@@ -229,50 +231,63 @@ public class RepeaterTab extends JPanel {
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
-    public void triggerSend() {
-        if (isSending) return;
-        isSending = true;
-        sendButton.setEnabled(false);
-        sendButton.setText("…");
-        setStatusChip("-", null);
-        bottomStatusLabel.setText("  Sending…");
+    /**
+     * Single entry point for sending — used by both the UI button and programmatic
+     * callers (MCP). If called from a non-EDT thread the action is marshalled to the
+     * EDT automatically. The returned Future completes (with the SendResult) after
+     * all UI state has been updated, so callers that need to wait can call .get().
+     */
+    public Future<RequestSender.SendResult> triggerSend() {
+        CompletableFuture<RequestSender.SendResult> future = new CompletableFuture<>();
 
-        syncTargetToMetadata();
-        byte[] rawBytes = requestEditor.getRequest().toByteArray().getBytes();
-        RequestData reqData = parseRawRequest(new String(rawBytes, StandardCharsets.UTF_8));
-        tabData.setCurrentRequest(reqData);
-        historyPos = -1;
+        Runnable action = () -> {
+            if (isSending) { future.complete(null); return; }
+            isSending = true;
+            sendButton.setEnabled(false);
+            sendButton.setText("…");
+            setStatusChip("-", null);
+            bottomStatusLabel.setText("  Sending…");
 
-        requestSender.sendAsync(reqData, result -> SwingUtilities.invokeLater(() -> {
-            isSending = false;
-            sendButton.setEnabled(true);
-            sendButton.setText("Send");
+            syncTargetToMetadata();
+            byte[] rawBytes = requestEditor.getRequest().toByteArray().getBytes();
+            RequestData reqData = parseRawRequest(new String(rawBytes, StandardCharsets.UTF_8));
+            tabData.setCurrentRequest(reqData);
+            historyPos = -1;
 
-            if (result.isSuccess()) {
-                ResponseData resp = result.getResponse();
-                tabData.setLatestResponse(resp);
-                try {
-                    responseEditor.setResponse(
-                        HttpResponse.httpResponse(ByteArray.byteArray(resp.getRawResponse().getBytes()))
-                    );
-                } catch (Exception ignored) {}
+            requestSender.sendAsync(reqData, result -> SwingUtilities.invokeLater(() -> {
+                isSending = false;
+                sendButton.setEnabled(true);
+                sendButton.setText("Send");
 
-                applyStatus(resp.getStatusCode());
-                timeLabel.setText(resp.getResponseTime() + " ms");
-                sizeLabel.setText(formatSize(resp.getResponseSize()));
-                bottomStatusLabel.setText("  " + formatSize(resp.getResponseSize())
-                    + "  |  " + resp.getResponseTime() + " ms");
+                if (result.isSuccess()) {
+                    ResponseData resp = result.getResponse();
+                    tabData.setLatestResponse(resp);
+                    try {
+                        responseEditor.setResponse(HttpResponse.httpResponse(
+                            ByteArray.byteArray(resp.getRawResponse().getBytes(StandardCharsets.UTF_8))));
+                    } catch (Exception ignored) {}
+                    applyStatus(resp.getStatusCode());
+                    timeLabel.setText(resp.getResponseTime() + " ms");
+                    sizeLabel.setText(formatSize(resp.getResponseSize()));
+                    bottomStatusLabel.setText("  " + formatSize(resp.getResponseSize())
+                        + "  |  " + resp.getResponseTime() + " ms");
+                    HistoryEntry entry = historyManager.addEntry(tabData.getId(), reqData, resp);
+                    tabData.addHistoryEntry(entry);
+                    updateNavButtons();
+                    updateTabTitle(reqData);
+                } else {
+                    setStatusChip("ERR", Color.RED);
+                    bottomStatusLabel.setText("  Error: " + result.getError());
+                    JOptionPane.showMessageDialog(RepeaterTab.this, result.getError(),
+                        "Send Error", JOptionPane.ERROR_MESSAGE);
+                }
+                future.complete(result); // notify any waiting caller
+            }));
+        };
 
-                HistoryEntry entry = historyManager.addEntry(tabData.getId(), reqData, resp);
-                tabData.addHistoryEntry(entry);
-                updateNavButtons();
-                updateTabTitle(reqData);
-            } else {
-                setStatusChip("ERR", Color.RED);
-                bottomStatusLabel.setText("  Error: " + result.getError());
-                JOptionPane.showMessageDialog(this, result.getError(), "Send Error", JOptionPane.ERROR_MESSAGE);
-            }
-        }));
+        if (SwingUtilities.isEventDispatchThread()) action.run();
+        else SwingUtilities.invokeLater(action);
+        return future;
     }
 
     private void navigateHistory(int direction) {

@@ -12,11 +12,13 @@ import com.repeaterx.model.HistoryEntry;
 import com.repeaterx.model.RequestData;
 import com.repeaterx.model.TabData;
 
+import com.repeaterx.core.RequestSender;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.Future;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
 
@@ -55,6 +57,7 @@ public class McpSseServer {
         TabData createTab(String name, String rawRequest);
         boolean deleteTab(String id);
         List<TabData> getAllTabs();
+        Future<RequestSender.SendResult> sendInTab(String tabId);
     }
 
     public McpSseServer(HistoryManager historyManager, RequestSender requestSender) {
@@ -339,6 +342,7 @@ public class McpSseServer {
             case "list_repeater_tabs"    -> toolListTabs();
             case "create_repeater_tab"   -> toolCreateTab(a);
             case "delete_repeater_tab"   -> toolDeleteTab(a);
+            case "send_repeater_tab"     -> toolSendTab(a);
             case "send_http_request"     -> toolSendRequest(a);
             case "get_request_history"   -> toolGetHistory(a);
             case "search_history"        -> toolSearchHistory(a);
@@ -383,6 +387,32 @@ public class McpSseServer {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
         boolean ok = tabOps.deleteTab(a.path("tab_id").asText());
         return pretty(Map.of("success", ok));
+    }
+
+    private String toolSendTab(JsonNode a) throws Exception {
+        if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
+        String tabId = a.path("tab_id").asText();
+        if (tabId.isBlank()) return "{\"error\":\"tab_id is required\"}";
+
+        // Triggers the exact same code path as clicking the Send button in the UI.
+        // The request is read from the tab's editor; the response is displayed there.
+        Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
+        if (future == null) return pretty(Map.of("success", false, "error", "Tab not found: " + tabId));
+
+        RequestSender.SendResult result = future.get(); // wait for UI + history update to complete
+        if (result == null) return pretty(Map.of("success", false, "error", "Tab busy or unavailable"));
+
+        if (result.isSuccess()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("success",      true);
+            m.put("statusCode",   result.getResponse().getStatusCode());
+            m.put("statusMessage",result.getResponse().getStatusMessage());
+            m.put("responseTime", result.getElapsed());
+            m.put("responseSize", result.getResponse().getResponseSize());
+            m.put("body",         result.getResponse().getBody());
+            return pretty(m);
+        }
+        return pretty(Map.of("success", false, "error", result.getError()));
     }
 
     private String toolSendRequest(JsonNode a) throws Exception {
@@ -528,6 +558,12 @@ public class McpSseServer {
         ToolDef.of("delete_repeater_tab",
             "Close and remove a RepeaterX tab.",
             Map.of("tab_id", prop("string", "UUID of the tab to close.", true))),
+
+        ToolDef.of("send_repeater_tab",
+            "Click Send on a RepeaterX tab — identical to pressing the Send button in the UI. "
+            + "Reads the current request from the tab editor, sends it via Burp's HTTP engine, "
+            + "and updates the response panel and history in the tab.",
+            Map.of("tab_id", prop("string", "UUID of the tab to send.", true))),
 
         ToolDef.of("send_http_request",
             "Send an HTTP/1.1 request through Burp's engine. Respects Burp proxy, TLS settings, and upstream proxies.",

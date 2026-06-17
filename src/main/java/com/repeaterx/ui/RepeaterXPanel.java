@@ -17,6 +17,7 @@ import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.concurrent.Future;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -460,4 +461,11 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
 
     @Override
     public List<TabData> getAllTabs() { return getAllTabData(); }
+
+    @Override
+    public Future<com.repeaterx.core.RequestSender.SendResult> sendInTab(String tabId) {
+        RepeaterTab tab = tabs.get(tabId);
+        if (tab == null) return java.util.concurrent.CompletableFuture.completedFuture(null);
+        return tab.triggerSend(); // same code path as clicking Send
+    }
 }
