@@ -310,12 +310,14 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     }
 
     void closeTab(String tabId) {
-        if (tabs.size() <= 1) return;
-        RepeaterTab tab = tabs.remove(tabId);
-        if (tab != null) {
-            int idx = tabbedPane.indexOfComponent(tab);
-            if (idx >= 0) tabbedPane.removeTabAt(idx);
-        }
+        RepeaterTab tab = tabs.get(tabId);
+        if (tab == null) return;
+        int idx = tabbedPane.indexOfComponent(tab);
+        if (idx < 0) return;
+        tabs.remove(tabId);
+        tabbedPane.removeTabAt(idx);
+        // Always keep at least one tab open
+        if (tabs.isEmpty()) createNewTab("Tab " + tabCounter, null);
     }
 
     private void duplicateCurrentTab() {
@@ -466,7 +468,13 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     public boolean updateTabRequest(String tabId, String rawRequest) {
         RepeaterTab tab = tabs.get(tabId);
         if (tab == null) return false;
-        SwingUtilities.invokeLater(() -> tab.setRequest(rawRequest, "", 0, false));
+        try {
+            if (SwingUtilities.isEventDispatchThread()) {
+                tab.setRequest(rawRequest, "", 0, false);
+            } else {
+                SwingUtilities.invokeAndWait(() -> tab.setRequest(rawRequest, "", 0, false));
+            }
+        } catch (Exception ignored) {}
         return true;
     }
 

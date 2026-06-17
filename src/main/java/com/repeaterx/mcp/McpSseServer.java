@@ -398,7 +398,6 @@ public class McpSseServer {
         boolean ok = tabOps.updateTabRequest(tabId, rawReq);
         if (!ok) return pretty(Map.of("success", false, "error", "Tab not found: " + tabId));
 
-        Thread.sleep(100); // let invokeLater finish painting the editor before reading it back
         Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
         if (future == null) return pretty(Map.of("success", false, "error", "Send failed"));
         RequestSender.SendResult result = future.get();
