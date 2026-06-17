@@ -9,29 +9,16 @@ import com.repeaterx.core.RequestSender;
 import com.repeaterx.http.HttpExchange;
 import com.repeaterx.http.SimpleHttpServer;
 import com.repeaterx.model.HistoryEntry;
-import com.repeaterx.model.RequestData;
 import com.repeaterx.model.TabData;
 
-import com.repeaterx.core.RequestSender;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.Future;
 import java.util.concurrent.*;
 import java.util.function.Supplier;
 
-/**
- * Embedded MCP SSE server.
- *
- * Architecture follows PortSwigger's burp-mcp extension:
- *   - GET  /sse      → long-lived SSE stream; sends "endpoint" event on connect
- *   - POST /message  → JSON-RPC 2.0 requests; responses sent back via the SSE stream
- *
- * For Claude Desktop (stdio-only), bridge via PortSwigger's proxy JAR:
- *   java -jar mcp-proxy-all.jar --sse-url http://127.0.0.1:7331
- */
 public class McpSseServer {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -338,17 +325,12 @@ public class McpSseServer {
 
     private String dispatchTool(String name, JsonNode a) throws Exception {
         return switch (name) {
-            case "get_status"            -> toolGetStatus();
-            case "list_repeater_tabs"    -> toolListTabs();
-            case "create_repeater_tab"   -> toolCreateTab(a);
-            case "delete_repeater_tab"   -> toolDeleteTab(a);
-            case "send_repeater_tab"     -> toolSendTab(a);
-            case "send_http_request"     -> toolSendRequest(a);
-            case "get_request_history"   -> toolGetHistory(a);
-            case "search_history"        -> toolSearchHistory(a);
-            case "replay_history_entry"  -> toolReplayEntry(a);
-            case "get_history_request"   -> toolGetRequest(a);
-            case "get_history_response"  -> toolGetResponse(a);
+            case "get_status"          -> toolGetStatus();
+            case "list_repeater_tabs"  -> toolListTabs();
+            case "create_repeater_tab" -> toolCreateTab(a);
+            case "delete_repeater_tab" -> toolDeleteTab(a);
+            case "send_repeater_tab"   -> toolSendTab(a);
+            case "get_tab_history"     -> toolGetTabHistory(a);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
         };
     }
@@ -440,86 +422,42 @@ public class McpSseServer {
         return pretty(Map.of("success", false, "error", result.getError()));
     }
 
-    private String toolSendRequest(JsonNode a) throws Exception {
-        String  host  = a.path("target_hostname").asText();
-        int     port  = a.path("target_port").asInt(443);
-        boolean https = a.path("uses_https").asBoolean(true);
-        String  method = a.path("method").asText("GET");
-        String  raw   = a.path("content").asText();
-        String  url   = (https ? "https" : "http") + "://" + host + "/";
-
-        RequestData req = new RequestData(
-            UUID.randomUUID().toString(), method, url, host, port, https, null, null, raw);
-        RequestSender.SendResult result = requestSender.send(req);
-
-        if (result.isSuccess()) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("success",      true);
-            m.put("statusCode",   result.getResponse().getStatusCode());
-            m.put("statusMessage",result.getResponse().getStatusMessage());
-            m.put("responseTime", result.getElapsed());
-            m.put("responseSize", result.getResponse().getResponseSize());
-            m.put("body",         result.getResponse().getBody());
-            m.put("rawResponse",  result.getResponse().getRawResponse());
-            return pretty(m);
-        }
-        return pretty(Map.of("success", false, "error", result.getError()));
-    }
-
-    private String toolGetHistory(JsonNode a) throws Exception {
-        List<HistoryEntry> entries;
-        if (a.has("query"))       entries = historyManager.search(a.get("query").asText());
-        else if (a.has("status_code")) entries = historyManager.filterByStatus(a.get("status_code").asInt());
-        else if (a.has("method"))      entries = historyManager.filterByMethod(a.get("method").asText());
-        else if (a.has("tab_id"))      entries = historyManager.getTabHistory(a.get("tab_id").asText());
-        else                           entries = historyManager.getAllHistory();
-
-        int limit  = a.path("count").asInt(50);
-        int offset = a.path("offset").asInt(0);
-        int end    = Math.min(offset + limit, entries.size());
+    private String toolGetTabHistory(JsonNode a) throws Exception {
+        String tabId = a.path("tab_id").asText();
+        if (tabId.isBlank()) return "{\"error\":\"tab_id is required\"}";
+        List<HistoryEntry> entries = historyManager.getTabHistory(tabId);
+        int limit = a.path("limit").asInt(entries.size());
+        int end   = Math.min(limit, entries.size());
 
         List<Map<String, Object>> out = new ArrayList<>();
-        for (int i = offset; i < end; i++) {
+        for (int i = 0; i < end; i++) {
             HistoryEntry e = entries.get(i);
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id",        e.getId());
-            m.put("tabId",     e.getTabId());
-            m.put("timestamp", e.getTimestamp());
-            if (e.getRequest()  != null) { m.put("method", e.getRequest().getMethod()); m.put("url", e.getRequest().getUrl()); }
-            if (e.getResponse() != null) { m.put("status", e.getResponse().getStatusCode()); m.put("responseTime", e.getResponse().getResponseTime()); }
-            out.add(m);
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("entry_id",  e.getId());
+            entry.put("timestamp", e.getTimestamp());
+
+            if (e.getRequest() != null) {
+                Map<String, Object> req = new LinkedHashMap<>();
+                req.put("method",  e.getRequest().getMethod());
+                req.put("url",     e.getRequest().getUrl());
+                req.put("raw",     e.getRequest().getRawRequest());
+                entry.put("request", req);
+            }
+
+            if (e.getResponse() != null) {
+                Map<String, Object> resp = new LinkedHashMap<>();
+                resp.put("statusCode",    e.getResponse().getStatusCode());
+                resp.put("statusMessage", e.getResponse().getStatusMessage());
+                resp.put("responseTime",  e.getResponse().getResponseTime());
+                resp.put("responseSize",  e.getResponse().getResponseSize());
+                resp.put("body",          e.getResponse().getBody());
+                resp.put("raw",           e.getResponse().getRawResponse());
+                entry.put("response", resp);
+            }
+
+            out.add(entry);
         }
-        return pretty(Map.of("total", entries.size(), "offset", offset, "count", out.size(), "entries", out));
-    }
-
-    private String toolSearchHistory(JsonNode a) throws Exception {
-        String query = a.path("query").asText();
-        int    limit = a.path("count").asInt(20);
-        List<HistoryEntry> results = historyManager.search(query);
-        List<HistoryEntry> paged   = results.subList(0, Math.min(limit, results.size()));
-        return pretty(Map.of("query", query, "total", results.size(), "results", paged));
-    }
-
-    private String toolReplayEntry(JsonNode a) throws Exception {
-        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
-        if (opt.isEmpty() || opt.get().getRequest() == null) return "{\"error\":\"History entry not found\"}";
-        RequestSender.SendResult result = requestSender.send(opt.get().getRequest());
-        if (result.isSuccess())
-            return pretty(Map.of("success", true, "statusCode", result.getResponse().getStatusCode(),
-                "responseTime", result.getElapsed(), "body", result.getResponse().getBody()));
-        return pretty(Map.of("success", false, "error", result.getError()));
-    }
-
-    private String toolGetRequest(JsonNode a) throws Exception {
-        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
-        if (opt.isEmpty() || opt.get().getRequest() == null) return "{\"error\":\"Not found\"}";
-        return pretty(opt.get().getRequest());
-    }
-
-    private String toolGetResponse(JsonNode a) throws Exception {
-        Optional<HistoryEntry> opt = historyManager.getEntryById(a.path("entry_id").asText());
-        if (opt.isEmpty() || opt.get().getResponse() == null) return "{\"error\":\"Not found\"}";
-        return pretty(opt.get().getResponse());
+        return pretty(Map.of("tab_id", tabId, "total", entries.size(), "entries", out));
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -593,45 +531,13 @@ public class McpSseServer {
             + "and updates the response panel and history in the tab.",
             Map.of("tab_id", prop("string", "UUID of the tab to send.", true))),
 
-        ToolDef.of("send_http_request",
-            "Send an HTTP/1.1 request through Burp's engine. Respects Burp proxy, TLS settings, and upstream proxies.",
+        ToolDef.of("get_tab_history",
+            "Return the full send history for a specific tab — every request+response pair in order. "
+            + "Use this to inspect what was sent and received in a tab.",
             Map.of(
-                "content",         prop("string",  "Full raw HTTP request (request-line + headers + blank + body, \\r\\n separated).", true),
-                "target_hostname", prop("string",  "Target hostname, e.g. 'api.example.com'.", true),
-                "target_port",     prop("integer", "Target port. Default 443.", false),
-                "uses_https",      prop("boolean", "Use TLS. Default true.", false),
-                "method",          prop("string",  "HTTP method. Default 'GET'.", false)
-            )),
-
-        ToolDef.of("get_request_history",
-            "Return paginated request/response history. Filter by search query, status code, HTTP method, or tab ID.",
-            Map.of(
-                "query",       prop("string",  "Full-text search across URL, method, host, response body.", false),
-                "status_code", prop("integer", "Filter by HTTP status code, e.g. 403.", false),
-                "method",      prop("string",  "Filter by HTTP method, e.g. 'POST'.", false),
-                "tab_id",      prop("string",  "Filter by tab UUID.", false),
-                "count",       prop("integer", "Page size. Default 50.", false),
-                "offset",      prop("integer", "Page offset. Default 0.", false)
-            )),
-
-        ToolDef.of("search_history",
-            "Full-text search across all history entries (URL, method, host, response body).",
-            Map.of(
-                "query", prop("string",  "Search term.", true),
-                "count", prop("integer", "Max results. Default 20.", false)
-            )),
-
-        ToolDef.of("replay_history_entry",
-            "Re-send a previously captured request from history.",
-            Map.of("entry_id", prop("string", "UUID of the history entry to replay.", true))),
-
-        ToolDef.of("get_history_request",
-            "Get full request details (headers, body, raw bytes) for a history entry.",
-            Map.of("entry_id", prop("string", "UUID of the history entry.", true))),
-
-        ToolDef.of("get_history_response",
-            "Get full response details (status, headers, body, raw bytes) for a history entry.",
-            Map.of("entry_id", prop("string", "UUID of the history entry.", true)))
+                "tab_id", prop("string",  "UUID of the tab.", true),
+                "limit",  prop("integer", "Max entries to return. Defaults to all.", false)
+            ))
     );
 
     private static Map<String, Object> prop(String type, String description, boolean required) {
