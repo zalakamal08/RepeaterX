@@ -44,6 +44,7 @@ public class McpSseServer {
         TabData createTab(String name, String rawRequest);
         boolean deleteTab(String id);
         List<TabData> getAllTabs();
+        boolean updateTabRequest(String tabId, String rawRequest);
         Future<RequestSender.SendResult> sendInTab(String tabId);
     }
 
@@ -329,7 +330,8 @@ public class McpSseServer {
             case "list_repeater_tabs"  -> toolListTabs();
             case "create_repeater_tab" -> toolCreateTab(a);
             case "delete_repeater_tab" -> toolDeleteTab(a);
-            case "send_repeater_tab"   -> toolSendTab(a);
+            case "send_repeater_tab"    -> toolSendTab(a);
+            case "update_tab_request"  -> toolUpdateTabRequest(a);
             case "get_tab_history"     -> toolGetTabHistory(a);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
         };
@@ -420,6 +422,40 @@ public class McpSseServer {
             return pretty(m);
         }
         return pretty(Map.of("success", false, "error", result.getError()));
+    }
+
+    private String toolUpdateTabRequest(JsonNode a) throws Exception {
+        if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
+        String tabId     = a.path("tab_id").asText();
+        String rawReq    = a.path("raw_request").asText();
+        if (tabId.isBlank())  return "{\"error\":\"tab_id is required\"}";
+        if (rawReq.isBlank()) return "{\"error\":\"raw_request is required\"}";
+        boolean ok = tabOps.updateTabRequest(tabId, rawReq);
+        if (!ok) return pretty(Map.of("success", false, "error", "Tab not found: " + tabId));
+
+        if (a.path("auto_send").asBoolean(false)) {
+            // Small delay to let invokeLater set the editor before we read it back
+            Thread.sleep(100);
+            Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
+            if (future == null) return pretty(Map.of("success", false, "error", "Send failed"));
+            RequestSender.SendResult result = future.get();
+            if (result == null) return pretty(Map.of("success", false, "error", "Tab busy"));
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("success", true);
+            m.put("updated", true);
+            m.put("sent",    true);
+            if (result.isSuccess()) {
+                m.put("statusCode",    result.getResponse().getStatusCode());
+                m.put("statusMessage", result.getResponse().getStatusMessage());
+                m.put("responseTime",  result.getElapsed());
+                m.put("responseSize",  result.getResponse().getResponseSize());
+                m.put("body",          result.getResponse().getBody());
+            } else {
+                m.put("error", result.getError());
+            }
+            return pretty(m);
+        }
+        return pretty(Map.of("success", true, "updated", true));
     }
 
     private String toolGetTabHistory(JsonNode a) throws Exception {
@@ -530,6 +566,17 @@ public class McpSseServer {
             + "Reads the current request from the tab editor, sends it via Burp's HTTP engine, "
             + "and updates the response panel and history in the tab.",
             Map.of("tab_id", prop("string", "UUID of the tab to send.", true))),
+
+        ToolDef.of("update_tab_request",
+            "Replace the raw HTTP request in an existing tab's editor. Optionally send it immediately "
+            + "(auto_send=true). Use this to modify a request (change a parameter, header, or body) "
+            + "and re-send it without leaving the tab — the updated request and response are both "
+            + "visible in Burp's UI.",
+            Map.of(
+                "tab_id",      prop("string",  "UUID of the tab to update.", true),
+                "raw_request", prop("string",  "Full raw HTTP request to load into the editor.", true),
+                "auto_send",   prop("boolean", "If true, send the request immediately after loading it.", false)
+            )),
 
         ToolDef.of("get_tab_history",
             "Return the full send history for a specific tab — every request+response pair in order. "

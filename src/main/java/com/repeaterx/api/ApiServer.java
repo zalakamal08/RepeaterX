@@ -33,6 +33,7 @@ public class ApiServer {
         TabData createTab(String name, String rawRequest);
         boolean deleteTab(String id);
         List<TabData> getAllTabs();
+        boolean updateTabRequest(String tabId, String rawRequest);
         Future<RequestSender.SendResult> sendInTab(String tabId);
     }
 
@@ -43,10 +44,11 @@ public class ApiServer {
 
     public void setTabOperations(TabOperations ops) {
         mcpSseServer.setTabOperations(new McpSseServer.TabOperations() {
-            @Override public TabData                        createTab(String name, String raw) { return ops.createTab(name, raw); }
-            @Override public boolean                        deleteTab(String id)               { return ops.deleteTab(id); }
-            @Override public List<TabData>                  getAllTabs()                        { return ops.getAllTabs(); }
-            @Override public Future<RequestSender.SendResult> sendInTab(String tabId)          { return ops.sendInTab(tabId); }
+            @Override public TabData                          createTab(String name, String raw)         { return ops.createTab(name, raw); }
+            @Override public boolean                          deleteTab(String id)                        { return ops.deleteTab(id); }
+            @Override public List<TabData>                    getAllTabs()                                 { return ops.getAllTabs(); }
+            @Override public boolean                          updateTabRequest(String id, String raw)     { return ops.updateTabRequest(id, raw); }
+            @Override public Future<RequestSender.SendResult> sendInTab(String tabId)                    { return ops.sendInTab(tabId); }
         });
     }
 

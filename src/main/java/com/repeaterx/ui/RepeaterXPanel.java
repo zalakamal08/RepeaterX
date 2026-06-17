@@ -463,6 +463,14 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     public List<TabData> getAllTabs() { return getAllTabData(); }
 
     @Override
+    public boolean updateTabRequest(String tabId, String rawRequest) {
+        RepeaterTab tab = tabs.get(tabId);
+        if (tab == null) return false;
+        SwingUtilities.invokeLater(() -> tab.setRequest(rawRequest, "", 0, false));
+        return true;
+    }
+
+    @Override
     public Future<com.repeaterx.core.RequestSender.SendResult> sendInTab(String tabId) {
         RepeaterTab tab = tabs.get(tabId);
         if (tab == null) return java.util.concurrent.CompletableFuture.completedFuture(null);
