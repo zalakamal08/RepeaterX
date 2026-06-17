@@ -22,8 +22,15 @@ import java.util.function.Supplier;
 public class McpSseServer {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final String SERVER_NAME    = "repeaterx";
-    private static final String SERVER_VERSION = "1.0.0";
+    private static final String SERVER_NAME        = "repeaterx";
+    private static final String SERVER_VERSION     = "1.0.0";
+    private static final String SERVER_DESCRIPTION =
+        "RepeaterX is a Burp Suite extension that lets you send and replay HTTP requests. " +
+        "Workflow: use create_repeater_tab to open a tab and fire a request, " +
+        "update_tab_request to modify and resend it on the same tab, " +
+        "get_tab_history to read every request/response pair sent from that tab, " +
+        "list_repeater_tabs to see all open tabs, delete_repeater_tab to close one. " +
+        "All requests go through Burp's engine — proxy rules, TLS, and upstream proxies apply.";
 
     private final HistoryManager historyManager;
     private final RequestSender  requestSender;
@@ -297,8 +304,9 @@ public class McpSseServer {
         ObjectNode r = MAPPER.createObjectNode();
         r.put("protocolVersion", version);
         ObjectNode info = r.putObject("serverInfo");
-        info.put("name",    SERVER_NAME);
-        info.put("version", SERVER_VERSION);
+        info.put("name",        SERVER_NAME);
+        info.put("version",     SERVER_VERSION);
+        info.put("description", SERVER_DESCRIPTION);
         r.putObject("capabilities").putObject("tools");
         return r;
     }
