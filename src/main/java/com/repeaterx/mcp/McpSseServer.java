@@ -380,6 +380,31 @@ public class McpSseServer {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
         TabData td = tabOps.createTab(a.path("tab_name").asText("New Tab"),
                                       a.path("raw_request").asText(""));
+        if (td == null) return "{\"error\":\"Failed to create tab\"}";
+
+        // auto_send: paste request into editor then click Send — response visible in the tab
+        if (a.path("auto_send").asBoolean(false)) {
+            Future<RequestSender.SendResult> future = tabOps.sendInTab(td.getId());
+            if (future != null) {
+                RequestSender.SendResult result = future.get();
+                if (result != null) {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("tab_id",   td.getId());
+                    m.put("tab_name", td.getName());
+                    m.put("sent",     true);
+                    if (result.isSuccess()) {
+                        m.put("statusCode",   result.getResponse().getStatusCode());
+                        m.put("statusMessage",result.getResponse().getStatusMessage());
+                        m.put("responseTime", result.getElapsed());
+                        m.put("responseSize", result.getResponse().getResponseSize());
+                        m.put("body",         result.getResponse().getBody());
+                    } else {
+                        m.put("error", result.getError());
+                    }
+                    return pretty(m);
+                }
+            }
+        }
         return pretty(td);
     }
 
@@ -549,10 +574,13 @@ public class McpSseServer {
             Map.of()),
 
         ToolDef.of("create_repeater_tab",
-            "Create a new RepeaterX tab. Optionally pre-load it with a raw HTTP request.",
+            "Create a new RepeaterX tab, paste the raw HTTP request into the editor, and optionally "
+            + "click Send immediately (auto_send=true). With auto_send the request is visible in the "
+            + "Burp tab and the response appears in the response panel — same as a manual send.",
             Map.of(
                 "tab_name",    prop("string",  "Tab label, e.g. 'IDOR Test'. Defaults to 'New Tab'.", false),
-                "raw_request", prop("string",  "Full raw HTTP request to pre-load (\\r\\n line endings).", false)
+                "raw_request", prop("string",  "Full raw HTTP request (\\r\\n line endings).", false),
+                "auto_send",   prop("boolean", "If true, click Send immediately after loading the request. Response is shown in the tab.", false)
             )),
 
         ToolDef.of("delete_repeater_tab",
