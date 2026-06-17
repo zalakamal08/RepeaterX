@@ -330,7 +330,6 @@ public class McpSseServer {
             case "list_repeater_tabs"  -> toolListTabs();
             case "create_repeater_tab" -> toolCreateTab(a);
             case "delete_repeater_tab" -> toolDeleteTab(a);
-            case "send_repeater_tab"    -> toolSendTab(a);
             case "update_tab_request"  -> toolUpdateTabRequest(a);
             case "get_tab_history"     -> toolGetTabHistory(a);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
@@ -366,30 +365,24 @@ public class McpSseServer {
                                       a.path("raw_request").asText(""));
         if (td == null) return "{\"error\":\"Failed to create tab\"}";
 
-        // auto_send: paste request into editor then click Send — response visible in the tab
-        if (a.path("auto_send").asBoolean(false)) {
-            Future<RequestSender.SendResult> future = tabOps.sendInTab(td.getId());
-            if (future != null) {
-                RequestSender.SendResult result = future.get();
-                if (result != null) {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("tab_id",   td.getId());
-                    m.put("tab_name", td.getName());
-                    m.put("sent",     true);
-                    if (result.isSuccess()) {
-                        m.put("statusCode",   result.getResponse().getStatusCode());
-                        m.put("statusMessage",result.getResponse().getStatusMessage());
-                        m.put("responseTime", result.getElapsed());
-                        m.put("responseSize", result.getResponse().getResponseSize());
-                        m.put("body",         result.getResponse().getBody());
-                    } else {
-                        m.put("error", result.getError());
-                    }
-                    return pretty(m);
-                }
-            }
+        Future<RequestSender.SendResult> future = tabOps.sendInTab(td.getId());
+        if (future == null) return pretty(Map.of("tab_id", td.getId(), "tab_name", td.getName(), "error", "Send failed"));
+        RequestSender.SendResult result = future.get();
+        if (result == null) return pretty(Map.of("tab_id", td.getId(), "tab_name", td.getName(), "error", "Tab busy"));
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("tab_id",   td.getId());
+        m.put("tab_name", td.getName());
+        if (result.isSuccess()) {
+            m.put("statusCode",    result.getResponse().getStatusCode());
+            m.put("statusMessage", result.getResponse().getStatusMessage());
+            m.put("responseTime",  result.getElapsed());
+            m.put("responseSize",  result.getResponse().getResponseSize());
+            m.put("body",          result.getResponse().getBody());
+        } else {
+            m.put("error", result.getError());
         }
-        return pretty(td);
+        return pretty(m);
     }
 
     private String toolDeleteTab(JsonNode a) throws Exception {
@@ -398,64 +391,33 @@ public class McpSseServer {
         return pretty(Map.of("success", ok));
     }
 
-    private String toolSendTab(JsonNode a) throws Exception {
-        if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
-        String tabId = a.path("tab_id").asText();
-        if (tabId.isBlank()) return "{\"error\":\"tab_id is required\"}";
-
-        // Triggers the exact same code path as clicking the Send button in the UI.
-        // The request is read from the tab's editor; the response is displayed there.
-        Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
-        if (future == null) return pretty(Map.of("success", false, "error", "Tab not found: " + tabId));
-
-        RequestSender.SendResult result = future.get(); // wait for UI + history update to complete
-        if (result == null) return pretty(Map.of("success", false, "error", "Tab busy or unavailable"));
-
-        if (result.isSuccess()) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("success",      true);
-            m.put("statusCode",   result.getResponse().getStatusCode());
-            m.put("statusMessage",result.getResponse().getStatusMessage());
-            m.put("responseTime", result.getElapsed());
-            m.put("responseSize", result.getResponse().getResponseSize());
-            m.put("body",         result.getResponse().getBody());
-            return pretty(m);
-        }
-        return pretty(Map.of("success", false, "error", result.getError()));
-    }
-
     private String toolUpdateTabRequest(JsonNode a) throws Exception {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
-        String tabId     = a.path("tab_id").asText();
-        String rawReq    = a.path("raw_request").asText();
+        String tabId  = a.path("tab_id").asText();
+        String rawReq = a.path("raw_request").asText();
         if (tabId.isBlank())  return "{\"error\":\"tab_id is required\"}";
         if (rawReq.isBlank()) return "{\"error\":\"raw_request is required\"}";
         boolean ok = tabOps.updateTabRequest(tabId, rawReq);
         if (!ok) return pretty(Map.of("success", false, "error", "Tab not found: " + tabId));
 
-        if (a.path("auto_send").asBoolean(false)) {
-            // Small delay to let invokeLater set the editor before we read it back
-            Thread.sleep(100);
-            Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
-            if (future == null) return pretty(Map.of("success", false, "error", "Send failed"));
-            RequestSender.SendResult result = future.get();
-            if (result == null) return pretty(Map.of("success", false, "error", "Tab busy"));
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("success", true);
-            m.put("updated", true);
-            m.put("sent",    true);
-            if (result.isSuccess()) {
-                m.put("statusCode",    result.getResponse().getStatusCode());
-                m.put("statusMessage", result.getResponse().getStatusMessage());
-                m.put("responseTime",  result.getElapsed());
-                m.put("responseSize",  result.getResponse().getResponseSize());
-                m.put("body",          result.getResponse().getBody());
-            } else {
-                m.put("error", result.getError());
-            }
-            return pretty(m);
+        Thread.sleep(100); // let invokeLater finish painting the editor before reading it back
+        Future<RequestSender.SendResult> future = tabOps.sendInTab(tabId);
+        if (future == null) return pretty(Map.of("success", false, "error", "Send failed"));
+        RequestSender.SendResult result = future.get();
+        if (result == null) return pretty(Map.of("success", false, "error", "Tab busy"));
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("success", true);
+        if (result.isSuccess()) {
+            m.put("statusCode",    result.getResponse().getStatusCode());
+            m.put("statusMessage", result.getResponse().getStatusMessage());
+            m.put("responseTime",  result.getElapsed());
+            m.put("responseSize",  result.getResponse().getResponseSize());
+            m.put("body",          result.getResponse().getBody());
+        } else {
+            m.put("error", result.getError());
         }
-        return pretty(Map.of("success", true, "updated", true));
+        return pretty(m);
     }
 
     private String toolGetTabHistory(JsonNode a) throws Exception {
@@ -548,34 +510,24 @@ public class McpSseServer {
             Map.of()),
 
         ToolDef.of("create_repeater_tab",
-            "Create a new RepeaterX tab, paste the raw HTTP request into the editor, and optionally "
-            + "click Send immediately (auto_send=true). With auto_send the request is visible in the "
-            + "Burp tab and the response appears in the response panel — same as a manual send.",
+            "Create a new RepeaterX tab, paste the raw HTTP request into the editor, and send it. "
+            + "The request and response are both visible in Burp's UI immediately.",
             Map.of(
-                "tab_name",    prop("string",  "Tab label, e.g. 'IDOR Test'. Defaults to 'New Tab'.", false),
-                "raw_request", prop("string",  "Full raw HTTP request (\\r\\n line endings).", false),
-                "auto_send",   prop("boolean", "If true, click Send immediately after loading the request. Response is shown in the tab.", false)
+                "tab_name",    prop("string", "Tab label, e.g. 'IDOR Test'. Defaults to 'New Tab'.", false),
+                "raw_request", prop("string", "Full raw HTTP request (\\r\\n line endings).", false)
             )),
 
         ToolDef.of("delete_repeater_tab",
             "Close and remove a RepeaterX tab.",
             Map.of("tab_id", prop("string", "UUID of the tab to close.", true))),
 
-        ToolDef.of("send_repeater_tab",
-            "Click Send on a RepeaterX tab — identical to pressing the Send button in the UI. "
-            + "Reads the current request from the tab editor, sends it via Burp's HTTP engine, "
-            + "and updates the response panel and history in the tab.",
-            Map.of("tab_id", prop("string", "UUID of the tab to send.", true))),
-
         ToolDef.of("update_tab_request",
-            "Replace the raw HTTP request in an existing tab's editor. Optionally send it immediately "
-            + "(auto_send=true). Use this to modify a request (change a parameter, header, or body) "
-            + "and re-send it without leaving the tab — the updated request and response are both "
-            + "visible in Burp's UI.",
+            "Replace the raw HTTP request in an existing tab's editor and send it immediately. "
+            + "Use this to modify a request (change a parameter, header, or body) and re-send it "
+            + "without leaving the tab — the updated request and response are both visible in Burp's UI.",
             Map.of(
-                "tab_id",      prop("string",  "UUID of the tab to update.", true),
-                "raw_request", prop("string",  "Full raw HTTP request to load into the editor.", true),
-                "auto_send",   prop("boolean", "If true, send the request immediately after loading it.", false)
+                "tab_id",      prop("string", "UUID of the tab to update.", true),
+                "raw_request", prop("string", "Full raw HTTP request to load into the editor and send.", true)
             )),
 
         ToolDef.of("get_tab_history",
