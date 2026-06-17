@@ -17,11 +17,12 @@ import javax.swing.*;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.MatteBorder;
-import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -57,10 +58,6 @@ public class RepeaterTab extends JPanel {
     private boolean isSending  = false;
     private int     historyPos = -1; // -1 = live (current), indices are oldest(0)..newest(size-1)
 
-    // Inspector
-    private DefaultTableModel reqHeadersModel;
-    private DefaultTableModel paramsModel;
-    private DefaultTableModel respHeadersModel;
 
     public RepeaterTab(MontoyaApi api, TabData tabData,
                        HistoryManager historyManager, RequestSender requestSender) {
@@ -428,89 +425,133 @@ public class RepeaterTab extends JPanel {
         return new RequestData(id, method, url, host, port, https, headers, body.toString(), raw);
     }
 
-    // ── Inspector ─────────────────────────────────────────────────────────────
+    // ── Inspector (Encoder / Decoder) ─────────────────────────────────────────
 
     private JPanel buildInspector() {
-        reqHeadersModel  = tableModel("Name", "Value");
-        paramsModel      = tableModel("Name", "Value");
-        respHeadersModel = tableModel("Name", "Value");
+        JTextArea input  = new JTextArea(3, 60);
+        JTextArea output = new JTextArea(3, 60);
 
-        JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
-        tabs.setFont(tabs.getFont().deriveFont(Font.PLAIN, 11f));
-        tabs.addTab("Request Headers",  inspectorTable(reqHeadersModel));
-        tabs.addTab("Params",           inspectorTable(paramsModel));
-        tabs.addTab("Response Headers", inspectorTable(respHeadersModel));
+        input.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        output.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        output.setEditable(false);
+        output.setBackground(UIManager.getColor("TextArea.background") != null
+            ? UIManager.getColor("TextArea.background").darker() : new Color(245, 245, 245));
+
+        JScrollPane inScroll  = new JScrollPane(input);
+        JScrollPane outScroll = new JScrollPane(output);
+        inScroll.setBorder(new MatteBorder(0, 0, 1, 0, sep()));
+        outScroll.setBorder(null);
+
+        // Button row
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 3));
+        buttons.setBorder(new EmptyBorder(0, 4, 0, 4));
+
+        addCodecBtn(buttons, "URL Decode",     input, output, s -> URLDecoder.decode(s, StandardCharsets.UTF_8));
+        addCodecBtn(buttons, "URL Encode",     input, output, s -> URLEncoder.encode(s, StandardCharsets.UTF_8));
+        addSep(buttons);
+        addCodecBtn(buttons, "Base64 Decode",  input, output, s -> new String(Base64.getDecoder().decode(s.trim()), StandardCharsets.UTF_8));
+        addCodecBtn(buttons, "Base64 Encode",  input, output, s -> Base64.getEncoder().encodeToString(s.getBytes(StandardCharsets.UTF_8)));
+        addSep(buttons);
+        addCodecBtn(buttons, "HTML Decode",    input, output, RepeaterTab::htmlDecode);
+        addCodecBtn(buttons, "HTML Encode",    input, output, RepeaterTab::htmlEncode);
+        addSep(buttons);
+        addCodecBtn(buttons, "Hex Decode",     input, output, s -> new String(hexToBytes(s.trim()), StandardCharsets.UTF_8));
+        addCodecBtn(buttons, "Hex Encode",     input, output, s -> bytesToHex(s.getBytes(StandardCharsets.UTF_8)));
+
+        JButton clearBtn = new JButton("Clear");
+        clearBtn.setFont(clearBtn.getFont().deriveFont(Font.PLAIN, 11f));
+        clearBtn.addActionListener(e -> { input.setText(""); output.setText(""); });
+        buttons.add(Box.createHorizontalStrut(8));
+        buttons.add(clearBtn);
+
+        // Labels
+        JLabel inLabel  = sectionLabel("Input");
+        JLabel outLabel = sectionLabel("Output");
+
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, inScroll, outScroll);
+        split.setResizeWeight(0.5);
+        split.setBorder(null);
+        split.setContinuousLayout(true);
+
+        JPanel top = new JPanel(new BorderLayout(0, 0));
+        top.add(inLabel,  BorderLayout.NORTH);
+        top.add(inScroll, BorderLayout.CENTER);
+
+        JPanel bot = new JPanel(new BorderLayout(0, 0));
+        bot.add(outLabel,  BorderLayout.NORTH);
+        bot.add(outScroll, BorderLayout.CENTER);
+
+        JSplitPane textSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, top, bot);
+        textSplit.setResizeWeight(0.5);
+        textSplit.setBorder(null);
+        textSplit.setContinuousLayout(true);
 
         JPanel panel = new JPanel(new BorderLayout(0, 0));
         panel.setBorder(new MatteBorder(1, 0, 0, 0, sep()));
-        panel.add(tabs, BorderLayout.CENTER);
+        panel.add(buttons,   BorderLayout.NORTH);
+        panel.add(textSplit, BorderLayout.CENTER);
         return panel;
     }
 
-    private DefaultTableModel tableModel(String col1, String col2) {
-        return new DefaultTableModel(new Object[]{col1, col2}, 0) {
-            @Override public boolean isCellEditable(int r, int c) { return false; }
-        };
+    private JLabel sectionLabel(String text) {
+        JLabel lbl = new JLabel("  " + text);
+        lbl.setFont(lbl.getFont().deriveFont(Font.BOLD, 11f));
+        lbl.setForeground(new Color(100, 100, 100));
+        lbl.setBorder(new CompoundBorder(new MatteBorder(0, 0, 1, 0, sep()), new EmptyBorder(2, 4, 2, 4)));
+        return lbl;
     }
 
-    private JScrollPane inspectorTable(DefaultTableModel model) {
-        JTable t = new JTable(model);
-        t.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
-        t.setRowHeight(18);
-        t.getTableHeader().setFont(t.getFont().deriveFont(Font.BOLD));
-        t.getColumnModel().getColumn(0).setPreferredWidth(200);
-        t.getColumnModel().getColumn(1).setPreferredWidth(600);
-        JScrollPane sp = new JScrollPane(t);
-        sp.setBorder(null);
-        return sp;
-    }
-
-    private void updateInspector(RequestData req, ResponseData resp) {
-        // Request headers
-        reqHeadersModel.setRowCount(0);
-        if (req != null && req.getHeaders() != null) {
-            for (String[] h : req.getHeaders()) {
-                if (h.length >= 2) reqHeadersModel.addRow(new Object[]{h[0], h[1]});
-            }
-        }
-
-        // Params — query string + body (form-encoded)
-        paramsModel.setRowCount(0);
-        if (req != null) {
+    private void addCodecBtn(JPanel bar, String label, JTextArea input, JTextArea output,
+                             java.util.function.Function<String, String> fn) {
+        JButton btn = new JButton(label);
+        btn.setFont(btn.getFont().deriveFont(Font.PLAIN, 11f));
+        btn.setFocusPainted(false);
+        btn.addActionListener(e -> {
+            String in = input.getSelectedText();
+            if (in == null || in.isEmpty()) in = input.getText();
+            if (in.isEmpty()) return;
             try {
-                String urlStr = req.getUrl();
-                if (urlStr != null && urlStr.contains("?")) {
-                    String query = urlStr.substring(urlStr.indexOf('?') + 1);
-                    for (String pair : query.split("&")) {
-                        String[] kv = pair.split("=", 2);
-                        paramsModel.addRow(new Object[]{
-                            URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
-                            kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : ""
-                        });
-                    }
-                }
-                String body = req.getBody();
-                if (body != null && !body.isBlank()) {
-                    for (String pair : body.split("&")) {
-                        String[] kv = pair.split("=", 2);
-                        try {
-                            paramsModel.addRow(new Object[]{
-                                URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
-                                kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : ""
-                            });
-                        } catch (Exception ignored) {}
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-
-        // Response headers
-        respHeadersModel.setRowCount(0);
-        if (resp != null && resp.getHeaders() != null) {
-            for (String[] h : resp.getHeaders()) {
-                if (h.length >= 2) respHeadersModel.addRow(new Object[]{h[0], h[1]});
+                output.setText(fn.apply(in));
+            } catch (Exception ex) {
+                output.setText("Error: " + ex.getMessage());
             }
-        }
+        });
+        bar.add(btn);
+    }
+
+    private void addSep(JPanel bar) {
+        JSeparator s = new JSeparator(JSeparator.VERTICAL);
+        s.setPreferredSize(new Dimension(1, 20));
+        bar.add(s);
+    }
+
+    private void updateInspector(RequestData req, ResponseData resp) { /* no-op: inspector is stateless */ }
+
+    // ── Codec helpers ──────────────────────────────────────────────────────────
+
+    private static String htmlEncode(String s) {
+        return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                .replace("\"","&quot;").replace("'","&#x27;");
+    }
+
+    private static String htmlDecode(String s) {
+        return s.replace("&amp;","&").replace("&lt;","<").replace("&gt;",">")
+                .replace("&quot;","\"").replace("&#x27;","'").replace("&#39;","'");
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        hex = hex.replaceAll("\\s+", "").replaceAll("0x", "").replaceAll("%", "");
+        if (hex.length() % 2 != 0) hex = "0" + hex;
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++)
+            out[i] = (byte) Integer.parseInt(hex.substring(i*2, i*2+2), 16);
+        return out;
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
