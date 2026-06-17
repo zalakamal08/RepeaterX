@@ -17,8 +17,10 @@ import javax.swing.*;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.MatteBorder;
+import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -53,7 +55,12 @@ public class RepeaterTab extends JPanel {
     private JLabel     bottomStatusLabel;
 
     private boolean isSending  = false;
-    private int     historyPos = -1; // -1 = live, 0 = most recent
+    private int     historyPos = -1; // -1 = live (current), indices are oldest(0)..newest(size-1)
+
+    // Inspector
+    private DefaultTableModel reqHeadersModel;
+    private DefaultTableModel paramsModel;
+    private DefaultTableModel respHeadersModel;
 
     public RepeaterTab(MontoyaApi api, TabData tabData,
                        HistoryManager historyManager, RequestSender requestSender) {
@@ -88,7 +95,12 @@ public class RepeaterTab extends JPanel {
         editorSplit.setBorder(null);
         editorSplit.setContinuousLayout(true);
 
-        add(editorSplit, BorderLayout.CENTER);
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, editorSplit, buildInspector());
+        mainSplit.setResizeWeight(0.72);
+        mainSplit.setBorder(null);
+        mainSplit.setContinuousLayout(true);
+
+        add(mainSplit, BorderLayout.CENTER);
         add(buildBottomBar(), BorderLayout.SOUTH);
     }
 
@@ -275,6 +287,7 @@ public class RepeaterTab extends JPanel {
                     tabData.addHistoryEntry(entry);
                     updateNavButtons();
                     updateTabTitle(reqData);
+                    updateInspector(reqData, resp);
                 } else {
                     setStatusChip("ERR", Color.RED);
                     bottomStatusLabel.setText("  Error: " + result.getError());
@@ -294,10 +307,12 @@ public class RepeaterTab extends JPanel {
         List<HistoryEntry> history = tabData.getHistory();
         if (history == null || history.isEmpty()) return;
         if (direction == -1) {
-            historyPos = (historyPos == -1) ? 0 : Math.min(historyPos + 1, history.size() - 1);
+            // ◄ Older: from live jump to most recent history (size-1), then walk toward 0
+            historyPos = (historyPos == -1) ? history.size() - 1 : Math.max(historyPos - 1, 0);
         } else {
-            if (historyPos > 0) historyPos--;
-            else historyPos = -1;
+            // ► Newer: walk toward size-1, then back to live
+            if (historyPos == history.size() - 1) historyPos = -1;
+            else if (historyPos >= 0)             historyPos++;
         }
         loadHistoryPosition();
         updateNavButtons();
@@ -306,9 +321,10 @@ public class RepeaterTab extends JPanel {
     private void loadHistoryPosition() {
         List<HistoryEntry> history = tabData.getHistory();
         if (historyPos == -1) {
-            if (tabData.getCurrentRequest()  != null) setEditorReq(tabData.getCurrentRequest().getRawRequest());
-            if (tabData.getLatestResponse()  != null) setEditorResp(tabData.getLatestResponse().getRawResponse());
-            if (tabData.getLatestResponse()  != null) applyStatus(tabData.getLatestResponse().getStatusCode());
+            if (tabData.getCurrentRequest() != null) setEditorReq(tabData.getCurrentRequest().getRawRequest());
+            if (tabData.getLatestResponse() != null) setEditorResp(tabData.getLatestResponse().getRawResponse());
+            if (tabData.getLatestResponse() != null) applyStatus(tabData.getLatestResponse().getStatusCode());
+            updateInspector(tabData.getCurrentRequest(), tabData.getLatestResponse());
         } else if (history != null && historyPos < history.size()) {
             HistoryEntry entry = history.get(historyPos);
             if (entry.getRequest()  != null) setEditorReq(entry.getRequest().getRawRequest());
@@ -317,10 +333,12 @@ public class RepeaterTab extends JPanel {
                 applyStatus(entry.getResponse().getStatusCode());
                 timeLabel.setText(entry.getResponse().getResponseTime() + " ms");
                 sizeLabel.setText(formatSize(entry.getResponse().getResponseSize()));
+                int total = history.size();
                 bottomStatusLabel.setText("  " + formatSize(entry.getResponse().getResponseSize())
                     + "  |  " + entry.getResponse().getResponseTime() + " ms"
-                    + "  [history " + (historyPos + 1) + "]");
+                    + "  [" + (total - historyPos) + " of " + total + "]");
             }
+            updateInspector(entry.getRequest(), entry.getResponse());
         }
     }
 
@@ -346,11 +364,13 @@ public class RepeaterTab extends JPanel {
     private void updateNavButtons() {
         List<HistoryEntry> history = tabData.getHistory();
         int total = (history != null) ? history.size() : 0;
-        prevButton.setEnabled(total > 0 && (historyPos == -1 || historyPos < total - 1));
-        nextButton.setEnabled(historyPos > 0 || (historyPos == 0 && total > 0));
+        // ◄ goes older (toward index 0) — disabled when already at oldest or no history
+        prevButton.setEnabled(total > 0 && historyPos != 0);
+        // ► goes newer (toward live) — disabled when already at live
+        nextButton.setEnabled(historyPos != -1);
         if (total == 0)            navLabel.setText("");
         else if (historyPos == -1) navLabel.setText(total + " sent");
-        else                       navLabel.setText((historyPos + 1) + " / " + total);
+        else                       navLabel.setText((total - historyPos) + " / " + total);
     }
 
     private void updateTabTitle(RequestData req) {
@@ -406,6 +426,91 @@ public class RepeaterTab extends JPanel {
         }
         String url = (https ? "https" : "http") + "://" + host + path;
         return new RequestData(id, method, url, host, port, https, headers, body.toString(), raw);
+    }
+
+    // ── Inspector ─────────────────────────────────────────────────────────────
+
+    private JPanel buildInspector() {
+        reqHeadersModel  = tableModel("Name", "Value");
+        paramsModel      = tableModel("Name", "Value");
+        respHeadersModel = tableModel("Name", "Value");
+
+        JTabbedPane tabs = new JTabbedPane(JTabbedPane.TOP);
+        tabs.setFont(tabs.getFont().deriveFont(Font.PLAIN, 11f));
+        tabs.addTab("Request Headers",  inspectorTable(reqHeadersModel));
+        tabs.addTab("Params",           inspectorTable(paramsModel));
+        tabs.addTab("Response Headers", inspectorTable(respHeadersModel));
+
+        JPanel panel = new JPanel(new BorderLayout(0, 0));
+        panel.setBorder(new MatteBorder(1, 0, 0, 0, sep()));
+        panel.add(tabs, BorderLayout.CENTER);
+        return panel;
+    }
+
+    private DefaultTableModel tableModel(String col1, String col2) {
+        return new DefaultTableModel(new Object[]{col1, col2}, 0) {
+            @Override public boolean isCellEditable(int r, int c) { return false; }
+        };
+    }
+
+    private JScrollPane inspectorTable(DefaultTableModel model) {
+        JTable t = new JTable(model);
+        t.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        t.setRowHeight(18);
+        t.getTableHeader().setFont(t.getFont().deriveFont(Font.BOLD));
+        t.getColumnModel().getColumn(0).setPreferredWidth(200);
+        t.getColumnModel().getColumn(1).setPreferredWidth(600);
+        JScrollPane sp = new JScrollPane(t);
+        sp.setBorder(null);
+        return sp;
+    }
+
+    private void updateInspector(RequestData req, ResponseData resp) {
+        // Request headers
+        reqHeadersModel.setRowCount(0);
+        if (req != null && req.getHeaders() != null) {
+            for (String[] h : req.getHeaders()) {
+                if (h.length >= 2) reqHeadersModel.addRow(new Object[]{h[0], h[1]});
+            }
+        }
+
+        // Params — query string + body (form-encoded)
+        paramsModel.setRowCount(0);
+        if (req != null) {
+            try {
+                String urlStr = req.getUrl();
+                if (urlStr != null && urlStr.contains("?")) {
+                    String query = urlStr.substring(urlStr.indexOf('?') + 1);
+                    for (String pair : query.split("&")) {
+                        String[] kv = pair.split("=", 2);
+                        paramsModel.addRow(new Object[]{
+                            URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
+                            kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : ""
+                        });
+                    }
+                }
+                String body = req.getBody();
+                if (body != null && !body.isBlank()) {
+                    for (String pair : body.split("&")) {
+                        String[] kv = pair.split("=", 2);
+                        try {
+                            paramsModel.addRow(new Object[]{
+                                URLDecoder.decode(kv[0], StandardCharsets.UTF_8),
+                                kv.length > 1 ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : ""
+                            });
+                        } catch (Exception ignored) {}
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Response headers
+        respHeadersModel.setRowCount(0);
+        if (resp != null && resp.getHeaders() != null) {
+            for (String[] h : resp.getHeaders()) {
+                if (h.length >= 2) respHeadersModel.addRow(new Object[]{h[0], h[1]});
+            }
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
