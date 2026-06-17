@@ -34,7 +34,8 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     private final Map<String, RepeaterTab> tabs = new LinkedHashMap<>();
     private int tabCounter = 1;
 
-    private JLabel apiStatusLabel;
+    private JLabel     apiStatusLabel;
+    private JTextField projectNameField;
 
     public RepeaterXPanel(MontoyaApi api, HistoryManager historyManager, RequestSender requestSender,
                           ProjectManager projectManager, ApiServer apiServer) {
@@ -92,12 +93,31 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         left.add(renameBtn);
         left.add(vSep());
 
-        JButton saveBtn = toolbarButton("Save", "Save project to file");
-        JButton loadBtn = toolbarButton("Load", "Load project from file");
+        JLabel projectLabel = new JLabel("Project:");
+        projectLabel.setFont(projectLabel.getFont().deriveFont(Font.PLAIN, 11f));
+
+        JTextField projectNameField = new JTextField(projectManager.getCurrentProjectName(), 14);
+        projectNameField.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
+        projectNameField.setToolTipText("Project name — auto-saved to ~/Documents/RepeaterX/<name>.json every 5 min");
+        projectNameField.setMaximumSize(new Dimension(160, 26));
+        projectNameField.setPreferredSize(new Dimension(140, 26));
+        // Update project name live as user types
+        projectNameField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            public void insertUpdate(javax.swing.event.DocumentEvent e)  { sync(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e)  { sync(); }
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { sync(); }
+            void sync() { projectManager.setCurrentProjectName(projectNameField.getText().trim()); }
+        });
+        this.projectNameField = projectNameField;
+
+        JButton saveBtn = toolbarButton("Save", "Save project now  (~/Documents/RepeaterX/<name>.json)");
+        JButton loadBtn = toolbarButton("Load", "Load a project file");
 
         saveBtn.addActionListener(e -> saveProject());
         loadBtn.addActionListener(e -> loadProject());
 
+        left.add(projectLabel);
+        left.add(projectNameField);
         left.add(saveBtn);
         left.add(loadBtn);
 
@@ -361,28 +381,49 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     // ── Project I/O ───────────────────────────────────────────────────────────
 
     private void saveProject() {
-        JFileChooser fc = new JFileChooser();
-        fc.setSelectedFile(new File("repeaterx-project.json"));
-        if (fc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                projectManager.saveProject(buildProjectData(), fc.getSelectedFile().toPath());
-                JOptionPane.showMessageDialog(this, "Project saved successfully.");
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(this, "Save failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-            }
+        String name = projectManager.getCurrentProjectName();
+        if (name.isBlank()) name = "default";
+        try {
+            ProjectData data = buildProjectData();
+            projectManager.saveProject(data, name);
+            showToast("Saved → " + projectManager.getCurrentProjectPath().getFileName());
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Save failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
     }
 
     private void loadProject() {
-        JFileChooser fc = new JFileChooser();
-        if (fc.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            try {
-                loadProjectData(projectManager.loadProject(fc.getSelectedFile().toPath()));
-                JOptionPane.showMessageDialog(this, "Project loaded successfully.");
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(this, "Load failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-            }
+        JFileChooser fc = new JFileChooser(projectManager.getDefaultDir().toFile());
+        fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("RepeaterX project (*.json)", "json"));
+        if (fc.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            ProjectData data = projectManager.loadProject(fc.getSelectedFile().toPath());
+            loadProjectData(data);
+            // Sync project name field to loaded file
+            if (projectNameField != null) projectNameField.setText(projectManager.getCurrentProjectName());
+            showToast("Loaded: " + projectManager.getCurrentProjectName());
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Load failed: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    /** Non-blocking toast shown in the bottom-right of the panel for 2 seconds. */
+    private void showToast(String msg) {
+        JWindow toast = new JWindow(SwingUtilities.getWindowAncestor(this));
+        JLabel lbl = new JLabel("  " + msg + "  ");
+        lbl.setFont(lbl.getFont().deriveFont(Font.PLAIN, 11f));
+        lbl.setOpaque(true);
+        lbl.setBackground(new Color(50, 50, 50));
+        lbl.setForeground(Color.WHITE);
+        lbl.setBorder(BorderFactory.createLineBorder(new Color(80, 80, 80)));
+        toast.add(lbl);
+        toast.pack();
+        // Position bottom-right of panel
+        Point loc = getLocationOnScreen();
+        toast.setLocation(loc.x + getWidth() - toast.getWidth() - 16,
+                          loc.y + getHeight() - toast.getHeight() - 12);
+        toast.setVisible(true);
+        new javax.swing.Timer(2000, ev -> toast.dispose()).start();
     }
 
     // ── Project data helpers ──────────────────────────────────────────────────
@@ -422,10 +463,14 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         if (projectManager.hasExistingProject()) {
             try {
                 ProjectData data = projectManager.loadProject();
-                if (data != null && data.getTabs() != null && !data.getTabs().isEmpty())
+                if (data != null && data.getTabs() != null && !data.getTabs().isEmpty()) {
                     loadProjectData(data);
+                    if (projectNameField != null) projectNameField.setText(projectManager.getCurrentProjectName());
+                }
             } catch (Exception ignored) {}
         }
+        // Start 5-minute auto-save after load attempt
+        projectManager.startAutoSave(this::autoSave);
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -436,7 +481,8 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
     }
 
     public void autoSave() {
-        try { projectManager.saveProject(buildProjectData()); } catch (Exception ignored) {}
+        try { projectManager.saveProject(buildProjectData(), projectManager.getCurrentProjectName()); }
+        catch (Exception ignored) {}
     }
 
     // ── ApiServer.TabOperations ───────────────────────────────────────────────
