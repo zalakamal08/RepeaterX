@@ -334,7 +334,6 @@ public class McpSseServer {
 
     private String dispatchTool(String name, JsonNode a) throws Exception {
         return switch (name) {
-            case "get_status"          -> toolGetStatus();
             case "list_repeater_tabs"  -> toolListTabs();
             case "create_repeater_tab" -> toolCreateTab(a);
             case "delete_repeater_tab" -> toolDeleteTab(a);
@@ -342,15 +341,6 @@ public class McpSseServer {
             case "get_tab_history"     -> toolGetTabHistory(a);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
         };
-    }
-
-    private String toolGetStatus() throws Exception {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("status",      "running");
-        m.put("version",     SERVER_VERSION);
-        m.put("historySize", historyManager.size());
-        m.put("openTabs",    tabsSupplier != null ? tabsSupplier.get().size() : 0);
-        return pretty(m);
     }
 
     private String toolListTabs() throws Exception {
@@ -432,38 +422,53 @@ public class McpSseServer {
         String tabId = a.path("tab_id").asText();
         if (tabId.isBlank()) return "{\"error\":\"tab_id is required\"}";
         List<HistoryEntry> entries = historyManager.getTabHistory(tabId);
-        int limit = a.path("limit").asInt(entries.size());
-        int end   = Math.min(limit, entries.size());
 
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (int i = 0; i < end; i++) {
-            HistoryEntry e = entries.get(i);
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("entry_id",  e.getId());
-            entry.put("timestamp", e.getTimestamp());
-
-            if (e.getRequest() != null) {
-                Map<String, Object> req = new LinkedHashMap<>();
-                req.put("method",  e.getRequest().getMethod());
-                req.put("url",     e.getRequest().getUrl());
-                req.put("raw",     e.getRequest().getRawRequest());
-                entry.put("request", req);
+        // No index supplied → return summary so agent knows what's available
+        if (!a.has("index")) {
+            List<Map<String, Object>> summary = new ArrayList<>();
+            for (int i = 0; i < entries.size(); i++) {
+                HistoryEntry e = entries.get(i);
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("index",     i);
+                row.put("timestamp", e.getTimestamp());
+                if (e.getRequest()  != null) { row.put("method", e.getRequest().getMethod()); row.put("url", e.getRequest().getUrl()); }
+                if (e.getResponse() != null) { row.put("statusCode", e.getResponse().getStatusCode()); row.put("responseTime", e.getResponse().getResponseTime()); }
+                summary.add(row);
             }
-
-            if (e.getResponse() != null) {
-                Map<String, Object> resp = new LinkedHashMap<>();
-                resp.put("statusCode",    e.getResponse().getStatusCode());
-                resp.put("statusMessage", e.getResponse().getStatusMessage());
-                resp.put("responseTime",  e.getResponse().getResponseTime());
-                resp.put("responseSize",  e.getResponse().getResponseSize());
-                resp.put("body",          e.getResponse().getBody());
-                resp.put("raw",           e.getResponse().getRawResponse());
-                entry.put("response", resp);
-            }
-
-            out.add(entry);
+            return pretty(Map.of("tab_id", tabId, "count", entries.size(), "entries", summary));
         }
-        return pretty(Map.of("tab_id", tabId, "total", entries.size(), "entries", out));
+
+        // Index supplied → return full request + response for that entry
+        int idx = a.path("index").asInt(-1);
+        if (idx < 0 || idx >= entries.size())
+            return pretty(Map.of("error", "index " + idx + " out of range, count is " + entries.size()));
+
+        HistoryEntry e = entries.get(idx);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("tab_id",    tabId);
+        out.put("index",     idx);
+        out.put("timestamp", e.getTimestamp());
+
+        if (e.getRequest() != null) {
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("method", e.getRequest().getMethod());
+            req.put("url",    e.getRequest().getUrl());
+            req.put("raw",    e.getRequest().getRawRequest());
+            out.put("request", req);
+        }
+
+        if (e.getResponse() != null) {
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("statusCode",    e.getResponse().getStatusCode());
+            resp.put("statusMessage", e.getResponse().getStatusMessage());
+            resp.put("responseTime",  e.getResponse().getResponseTime());
+            resp.put("responseSize",  e.getResponse().getResponseSize());
+            resp.put("body",          e.getResponse().getBody());
+            resp.put("raw",           e.getResponse().getRawResponse());
+            out.put("response", resp);
+        }
+
+        return pretty(out);
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -509,41 +514,48 @@ public class McpSseServer {
     // ── Tool definitions (MCP schema) ─────────────────────────────────────────
 
     private static final List<ToolDef> TOOLS = List.of(
-        ToolDef.of("get_status",
-            "Get RepeaterX server status, number of open tabs, and total history size.",
-            Map.of()),
-
         ToolDef.of("list_repeater_tabs",
-            "List all open RepeaterX tabs with their names, history counts, notes, and last response status.",
+            "List all open RepeaterX tabs. Each entry includes the tab id, name, historyCount (how many "
+            + "requests have been sent from that tab), and the last response status code. "
+            + "Call this first to discover tab ids and check how many history entries each tab has "
+            + "before calling get_tab_history.",
             Map.of()),
 
         ToolDef.of("create_repeater_tab",
-            "Create a new RepeaterX tab, paste the raw HTTP request into the editor, and send it. "
-            + "The request and response are both visible in Burp's UI immediately.",
+            "Open a new Burp Repeater tab, load the given raw HTTP request into the editor, and send it "
+            + "immediately. Returns the tab_id you will need for update_tab_request and get_tab_history, "
+            + "plus the full response (statusCode, body, responseTime). "
+            + "Use this for the first request in a test sequence.",
             Map.of(
-                "tab_name",    prop("string", "Tab label, e.g. 'IDOR Test'. Defaults to 'New Tab'.", false),
-                "raw_request", prop("string", "Full raw HTTP request (\\r\\n line endings).", false)
+                "tab_name",    prop("string", "Label shown on the tab, e.g. 'IDOR - user_id test'. Defaults to 'New Tab'.", false),
+                "raw_request", prop("string", "Complete raw HTTP request including request-line, headers, blank line, and body. Use \\r\\n as line endings.", false)
             )),
 
         ToolDef.of("delete_repeater_tab",
-            "Close and remove a RepeaterX tab.",
-            Map.of("tab_id", prop("string", "UUID of the tab to close.", true))),
+            "Close and permanently remove a Burp Repeater tab. Use this to clean up tabs you no longer need.",
+            Map.of("tab_id", prop("string", "UUID of the tab returned by list_repeater_tabs or create_repeater_tab.", true))),
 
         ToolDef.of("update_tab_request",
-            "Replace the raw HTTP request in an existing tab's editor and send it immediately. "
-            + "Use this to modify a request (change a parameter, header, or body) and re-send it "
-            + "without leaving the tab — the updated request and response are both visible in Burp's UI.",
+            "Replace the raw HTTP request in an existing tab and send it immediately. "
+            + "Use this to mutate a previous request — change a parameter value, swap a header, inject a payload, "
+            + "or modify the body — and re-send it without opening a new tab. "
+            + "Returns the full response. Both the updated request and response are visible in Burp's UI. "
+            + "Typical pattern: create_repeater_tab → update_tab_request (repeat for each mutation).",
             Map.of(
-                "tab_id",      prop("string", "UUID of the tab to update.", true),
-                "raw_request", prop("string", "Full raw HTTP request to load into the editor and send.", true)
+                "tab_id",      prop("string", "UUID of the tab to update, from list_repeater_tabs or create_repeater_tab.", true),
+                "raw_request", prop("string", "Complete modified raw HTTP request to load and send.", true)
             )),
 
         ToolDef.of("get_tab_history",
-            "Return the full send history for a specific tab — every request+response pair in order. "
-            + "Use this to inspect what was sent and received in a tab.",
+            "Inspect the send history of a specific tab. "
+            + "Without 'index': returns a lightweight summary — count of entries plus index, timestamp, method, URL, "
+            + "and status code for each. Call this first to see how many sends have happened and pick the entries you care about. "
+            + "With 'index': returns the full request (method, URL, raw) and full response (statusCode, body, raw) "
+            + "for that single entry. Index is 0-based; use the count from list_repeater_tabs or the summary "
+            + "to know the valid range. Example: call without index to see 5 entries, then call with index=2 to read the third one.",
             Map.of(
                 "tab_id", prop("string",  "UUID of the tab.", true),
-                "limit",  prop("integer", "Max entries to return. Defaults to all.", false)
+                "index",  prop("integer", "0-based position of the history entry to fetch in full. Omit to get the summary list.", false)
             ))
     );
 
