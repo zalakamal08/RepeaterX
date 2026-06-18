@@ -480,6 +480,12 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         tab.setRequest(rawRequest, host, port, https);
     }
 
+    public void setProjectNameField(String name) {
+        if (projectNameField != null) {
+            projectNameField.setText(name);
+        }
+    }
+
     public void autoSave() {
         try { projectManager.saveProject(buildProjectData(), projectManager.getCurrentProjectName()); }
         catch (Exception ignored) {}

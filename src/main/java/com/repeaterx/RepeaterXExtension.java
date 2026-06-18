@@ -11,6 +11,8 @@ import com.repeaterx.core.ProjectManager;
 import com.repeaterx.core.RequestSender;
 import com.repeaterx.ui.RepeaterXPanel;
 import javax.swing.SwingUtilities;
+import java.awt.Frame;
+import java.awt.Window;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -46,6 +48,14 @@ public class RepeaterXExtension implements BurpExtension {
                 api.userInterface().applyThemeToComponent(panel);
                 api.userInterface().registerContextMenuItemsProvider(new ContextMenuHandler(panel));
                 api.logging().logToOutput("RepeaterX UI initialized.");
+
+                // Auto-detect Burp project name from main frame title
+                String detectedProject = detectBurpProjectName();
+                if (detectedProject != null && !detectedProject.isBlank()) {
+                    projectManager.setCurrentProjectName(detectedProject);
+                    panel.setProjectNameField(detectedProject);
+                    api.logging().logToOutput("RepeaterX: detected project name: " + detectedProject);
+                }
             } catch (Exception e) {
                 api.logging().logToError("RepeaterX UI init failed: " + e.getMessage());
             }
@@ -70,6 +80,27 @@ public class RepeaterXExtension implements BurpExtension {
         });
 
         api.logging().logToOutput("RepeaterX v1.0.0 loaded. API on " + cfg.getHost() + ":" + cfg.getPort());
+    }
+
+    private static String detectBurpProjectName() {
+        for (Window w : Window.getWindows()) {
+            if (w instanceof Frame) {
+                String title = ((Frame) w).getTitle();
+                if (title != null && title.contains("Burp")) {
+                    // Title formats:
+                    //   "Burp Suite Professional vX.Y - <project_name>"
+                    //   "<project_name> - Burp Suite Professional"
+                    String[] parts = title.split(" - ", 2);
+                    for (String part : parts) {
+                        String trimmed = part.trim();
+                        if (!trimmed.startsWith("Burp") && !trimmed.isEmpty()) {
+                            return trimmed;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private Path configPath(MontoyaApi api) {
