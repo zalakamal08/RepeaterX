@@ -289,6 +289,8 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         tabbedPane.setTabComponentAt(idx, buildTabHeader(name, id));
         tabbedPane.setSelectedIndex(idx);
         tabCounter++;
+        // If the caller gave a real name (not a generic "Tab N"), lock it
+        if (name != null && !name.matches("Tab \\d+")) tab.markUserNamed();
         if (rawRequest != null && !rawRequest.isBlank()) tab.setRequest(rawRequest, "", 443, true);
         return tab;
     }
@@ -365,6 +367,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         String newName = JOptionPane.showInputDialog(this, "Tab name:", current.getTabData().getName());
         if (newName != null && !newName.isBlank()) {
             current.getTabData().setName(newName);
+            current.markUserNamed(); // lock the name — auto-title won't overwrite it
             int idx = tabbedPane.indexOfComponent(current);
             if (idx >= 0) {
                 tabbedPane.setTabComponentAt(idx, buildTabHeader(newName, current.getTabId()));
