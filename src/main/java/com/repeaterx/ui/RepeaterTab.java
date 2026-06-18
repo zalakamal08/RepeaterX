@@ -55,9 +55,8 @@ public class RepeaterTab extends JPanel {
     private JTextField targetField;
     private JLabel     bottomStatusLabel;
 
-    private boolean isSending       = false;
-    private int     historyPos      = -1;    // -1 = live (current), indices are oldest(0)..newest(size-1)
-    private boolean userNamedTab    = false; // true once the user explicitly renames the tab
+    private boolean isSending  = false;
+    private int     historyPos = -1; // -1 = live (current), indices are oldest(0)..newest(size-1)
 
 
     public RepeaterTab(MontoyaApi api, TabData tabData,
@@ -284,7 +283,6 @@ public class RepeaterTab extends JPanel {
                     HistoryEntry entry = historyManager.addEntry(tabData.getId(), reqData, resp);
                     tabData.addHistoryEntry(entry);
                     updateNavButtons();
-                    updateTabTitle(reqData);
                     updateInspector(reqData, resp);
                 } else {
                     setStatusChip("ERR", Color.RED);
@@ -371,16 +369,6 @@ public class RepeaterTab extends JPanel {
         else                       navLabel.setText((total - historyPos) + " / " + total);
     }
 
-    private void updateTabTitle(RequestData req) {
-        if (userNamedTab) return; // user set a custom name — don't overwrite it
-        String path  = extractPath(req.getUrl());
-        String title = req.getMethod() + " " + path;
-        tabData.setName(title);
-        if (titleListener != null) titleListener.onTitleChange(tabData.getId(), title);
-    }
-
-    /** Call when the user explicitly renames the tab so auto-title stops firing. */
-    public void markUserNamed() { userNamedTab = true; }
 
     // ── Request parsing ───────────────────────────────────────────────────────
 
