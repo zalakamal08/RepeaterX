@@ -643,6 +643,31 @@ public class RepeaterTab extends JPanel {
         if (targetField != null)
             targetField.setText((https ? "https" : "http") + "://" + host + (std ? "" : ":" + port));
         setEditorReq(rawRequest);
+
+        // Auto-name from last 2 path segments if tab still has a generic name
+        String current = tabData.getName();
+        if (current == null || current.matches("Tab \\d+") || current.equals("New Tab")) {
+            String autoName = lastTwoSegments(rawRequest);
+            if (autoName != null) {
+                tabData.setName(autoName);
+                if (titleListener != null) titleListener.onTitleChange(tabData.getId(), autoName);
+            }
+        }
+    }
+
+    private static String lastTwoSegments(String rawRequest) {
+        if (rawRequest == null) return null;
+        String line = rawRequest.split("\r\n|\n", 2)[0].trim(); // e.g. "GET /a/b/c/orders/123 HTTP/1.1"
+        String[] parts = line.split("\\s+");
+        if (parts.length < 2) return null;
+        String path = parts[1].split("\\?")[0]; // strip query string
+        String[] segs = path.split("/");
+        if (segs.length <= 2) return path; // already short enough
+        // last two non-empty segments
+        List<String> nonEmpty = new ArrayList<>();
+        for (String s : segs) if (!s.isEmpty()) nonEmpty.add(s);
+        if (nonEmpty.size() < 2) return path;
+        return "/" + nonEmpty.get(nonEmpty.size() - 2) + "/" + nonEmpty.get(nonEmpty.size() - 1);
     }
 
     public void setTitleListener(TitleListener l) { this.titleListener = l; }

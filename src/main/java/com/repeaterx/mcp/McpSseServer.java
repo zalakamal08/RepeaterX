@@ -473,11 +473,17 @@ public class McpSseServer {
 
     private static String nameFromRequest(String raw) {
         if (raw == null || raw.isBlank()) return "New Tab";
-        String method = "", host = "";
         String[] lines = raw.split("\r\n|\n", 10);
-        if (lines.length > 0) { String[] p = lines[0].trim().split("\\s+", 3); if (p.length >= 1) method = p[0]; }
-        for (String l : lines) { if (l.toLowerCase().startsWith("host:")) { host = l.substring(5).trim(); break; } }
-        return (method + " " + host).trim().isEmpty() ? "New Tab" : (method + " " + host).trim();
+        if (lines.length == 0) return "New Tab";
+        String[] parts = lines[0].trim().split("\\s+", 3);
+        if (parts.length < 2) return "New Tab";
+        String path = parts[1].split("\\?")[0];
+        String[] segs = path.split("/");
+        java.util.List<String> nonEmpty = new java.util.ArrayList<>();
+        for (String s : segs) if (!s.isEmpty()) nonEmpty.add(s);
+        if (nonEmpty.size() >= 2)
+            return "/" + nonEmpty.get(nonEmpty.size() - 2) + "/" + nonEmpty.get(nonEmpty.size() - 1);
+        return path.isEmpty() ? "New Tab" : path;
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────

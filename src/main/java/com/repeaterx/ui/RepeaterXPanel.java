@@ -57,7 +57,7 @@ public class RepeaterXPanel extends JPanel implements ApiServer.TabOperations {
         add(buildToolbar(), BorderLayout.NORTH);
 
         tabbedPane = new JTabbedPane(JTabbedPane.TOP);
-        tabbedPane.setTabLayoutPolicy(JTabbedPane.SCROLL_TAB_LAYOUT);
+        tabbedPane.setTabLayoutPolicy(JTabbedPane.WRAP_TAB_LAYOUT);
         add(tabbedPane, BorderLayout.CENTER);
     }
 
