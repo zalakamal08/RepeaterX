@@ -338,7 +338,6 @@ public class McpSseServer {
             case "create_repeater_tab" -> toolCreateTab(a);
             case "delete_repeater_tab" -> toolDeleteTab(a);
             case "update_tab_request"  -> toolUpdateTabRequest(a);
-            case "batch_create_tabs"   -> toolBatchCreateTabs(a);
             case "get_tab_history"     -> toolGetTabHistory(a);
             default -> throw new IllegalArgumentException("Unknown tool: " + name);
         };
@@ -361,7 +360,7 @@ public class McpSseServer {
     private String toolCreateTab(JsonNode a) throws Exception {
         if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
         String tabName = a.path("tab_name").asText("").trim();
-        if (tabName.isEmpty()) tabName = deriveTabName(a.path("raw_request").asText(""), "New Tab");
+        if (tabName.isEmpty()) tabName = nameFromRequest(a.path("raw_request").asText(""));
         TabData td = tabOps.createTab(tabName, a.path("raw_request").asText(""));
         if (td == null) return "{\"error\":\"Failed to create tab\"}";
 
@@ -419,70 +418,6 @@ public class McpSseServer {
         return pretty(m);
     }
 
-    private String toolBatchCreateTabs(JsonNode a) throws Exception {
-        if (tabOps == null) return "{\"error\":\"Panel not ready\"}";
-        JsonNode reqs = a.path("requests");
-        if (!reqs.isArray() || reqs.size() == 0) return "{\"error\":\"requests array is required\"}";
-        int count = Math.min(reqs.size(), 10);
-
-        // Phase 1: create all tabs (EDT-serialised but fast — just UI setup)
-        List<TabData> created = new ArrayList<>();
-        for (int i = 0; i < count; i++) {
-            JsonNode r = reqs.get(i);
-            String name = r.path("tab_name").asText("").trim();
-            String raw  = r.path("raw_request").asText("").trim();
-            if (name.isEmpty()) name = deriveTabName(raw, "Batch " + (i + 1));
-            TabData td = tabOps.createTab(name, raw);
-            if (td != null) created.add(td);
-        }
-
-        // Phase 2: fire all sends in parallel (sendInTab uses invokeLater internally — non-blocking)
-        List<Future<RequestSender.SendResult>> futures = new ArrayList<>();
-        for (TabData td : created) futures.add(tabOps.sendInTab(td.getId()));
-
-        // Phase 3: collect results with 30s timeout each
-        List<Map<String, Object>> results = new ArrayList<>();
-        for (int i = 0; i < futures.size(); i++) {
-            TabData td = created.get(i);
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("tab_id",   td.getId());
-            m.put("tab_name", td.getName());
-            try {
-                RequestSender.SendResult r = futures.get(i).get(30, TimeUnit.SECONDS);
-                if (r != null && r.isSuccess()) {
-                    m.put("statusCode",    r.getResponse().getStatusCode());
-                    m.put("statusMessage", r.getResponse().getStatusMessage());
-                    m.put("responseTime",  r.getElapsed());
-                    m.put("responseSize",  r.getResponse().getResponseSize());
-                    m.put("body",          r.getResponse().getBody());
-                } else {
-                    m.put("error", r != null ? r.getError() : "No response");
-                }
-            } catch (TimeoutException e) {
-                m.put("error", "Timed out after 30s");
-            } catch (Exception e) {
-                m.put("error", e.getMessage() != null ? e.getMessage() : "Unknown error");
-            }
-            results.add(m);
-        }
-        return pretty(Map.of("total", results.size(), "results", results));
-    }
-
-    private static String deriveTabName(String rawRequest, String fallback) {
-        if (rawRequest == null || rawRequest.isBlank()) return fallback;
-        String method = "", host = "";
-        String[] lines = rawRequest.split("\r\n|\n", 10);
-        if (lines.length > 0) {
-            String[] parts = lines[0].trim().split("\\s+", 3);
-            if (parts.length >= 1) method = parts[0];
-        }
-        for (String line : lines) {
-            if (line.toLowerCase().startsWith("host:")) { host = line.substring(5).trim(); break; }
-        }
-        if (method.isEmpty() && host.isEmpty()) return fallback;
-        return (method + " " + host).trim();
-    }
-
     private String toolGetTabHistory(JsonNode a) throws Exception {
         String tabId = a.path("tab_id").asText();
         if (tabId.isBlank()) return "{\"error\":\"tab_id is required\"}";
@@ -534,6 +469,15 @@ public class McpSseServer {
         }
 
         return pretty(out);
+    }
+
+    private static String nameFromRequest(String raw) {
+        if (raw == null || raw.isBlank()) return "New Tab";
+        String method = "", host = "";
+        String[] lines = raw.split("\r\n|\n", 10);
+        if (lines.length > 0) { String[] p = lines[0].trim().split("\\s+", 3); if (p.length >= 1) method = p[0]; }
+        for (String l : lines) { if (l.toLowerCase().startsWith("host:")) { host = l.substring(5).trim(); break; } }
+        return (method + " " + host).trim().isEmpty() ? "New Tab" : (method + " " + host).trim();
     }
 
     // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -602,25 +546,17 @@ public class McpSseServer {
 
         ToolDef.of("update_tab_request",
             "Replace the raw HTTP request in an existing tab and send it immediately. "
-            + "Use this to mutate a previous request — change a parameter value, swap a header, inject a payload, "
-            + "or modify the body — and re-send it without opening a new tab. "
-            + "Returns the full response. Both the updated request and response are visible in Burp's UI. "
-            + "Typical pattern: create_repeater_tab → update_tab_request (repeat for each mutation).",
+            + "Returns the full response (statusCode, body, responseTime). "
+            + "Both the updated request and response are visible in Burp's UI. "
+            + "PARALLEL-SAFE: call this simultaneously on multiple tabs (each with a different tab_id) "
+            + "to run parallel requests — e.g. IDOR across 10 user IDs, same payload on different endpoints, "
+            + "or fuzzing multiple parameters at once. Each tab sends independently; results come back "
+            + "as each tab finishes (30s timeout per tab). "
+            + "Typical pattern: create N tabs with create_repeater_tab, then call update_tab_request "
+            + "on all N tabs in parallel for each test round.",
             Map.of(
-                "tab_id",      prop("string", "UUID of the tab to update, from list_repeater_tabs or create_repeater_tab.", true),
+                "tab_id",      prop("string", "UUID of the tab to update — each parallel call must target a different tab.", true),
                 "raw_request", prop("string", "Complete modified raw HTTP request to load and send.", true)
-            )),
-
-        ToolDef.of("batch_create_tabs",
-            "Create and send up to 10 HTTP requests in parallel — each in its own Burp Repeater tab. "
-            + "Use this for parallel security assessment: send the same endpoint with different payloads, "
-            + "or multiple endpoints simultaneously. All tabs open in Burp's UI so you can inspect each "
-            + "request and response visually. Returns results for all tabs as soon as every send completes "
-            + "(or times out after 30s). "
-            + "Typical use: IDOR testing across 10 user IDs, fuzzing multiple parameters simultaneously, "
-            + "or mapping an entire API surface in one call.",
-            Map.of(
-                "requests", prop("array", "Array of objects, each with optional tab_name (string) and raw_request (string). Max 10 entries.", true)
             )),
 
         ToolDef.of("get_tab_history",
